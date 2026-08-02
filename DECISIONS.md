@@ -212,7 +212,38 @@ staging before rethrowing. Costs four lines and converts a total-loss failure in
 Consistent with the module's existing philosophy (never `rm` the live install before the
 replacement exists) — the plan just didn't carry it through the last step.
 
-### D14. `context_window_size` was 1000000, not 200000
+### D14. `test/run.js` isolates HOME per fixture, not just per suite-run
+
+**Deviation from the plan.** §15's `test/run.js` spawns each fixture against the real
+`~/.claude/cache/ampline`. On this dev machine that produced an actual failing test:
+`no-rate-limits.json` picked up a leftover cached `usage` entry from earlier manual testing and
+rendered a countdown it shouldn't have — reproducing a real bug class (fixture non-determinism for
+any contributor who has actually used the tool), not a bug in `usage.js` itself.
+
+**First fix attempted, insufficient:** one shared throwaway `HOME` for the whole test run. This
+still failed — fixtures run alphabetically, and `five-hour-only.json` / `float-percentages.json` /
+`full.json` all carry live, non-expired `rate_limits` and run *before* `no-rate-limits.json`,
+legitimately write-through-caching into the shared fake home. A later fixture in the same run then
+correctly inherits that cache — same failure, different cause.
+
+**Decision:** give every fixture (and the `NO_COLOR` check) its own `fs.mkdtempSync` home,
+created and torn down per subprocess. Slightly more I/O than the plan's version; the only way to
+make each fixture actually test its documented scenario in isolation, both from the developer's
+real cache and from every other fixture in the same run.
+
+### D15. `scripts/verify-pack.js` needs `shell: true` to invoke `npm` on Windows
+
+**Deviation from the plan.** `execFileSync('npm', [...])` fails with `ENOENT` on Windows —
+`npm` there is `npm.cmd`, a shim, and `execFileSync` without `shell: true` doesn't route
+through PATHEXT resolution the way a real shell invocation does. Caught by actually running
+the script locally rather than trusting it would work from the plan's snippet.
+
+**Decision:** pass `shell: true`. Works identically on all three OSes, so no `win32` branch
+needed. Matters beyond local dev — the CI matrix's `pack` job could have silently only ever
+been exercised on `ubuntu-latest` per the plan, but any Windows contributor running
+`node scripts/verify-pack.js` locally would have hit this immediately.
+
+### D16. `context_window_size` was 1000000, not 200000
 
 This account runs a 1M-token context. `used_percentage` is already normalized against the
 real window size, so the context bar needs no change — but it confirms that reading
