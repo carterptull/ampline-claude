@@ -199,7 +199,20 @@ dependency of `ampline-claude` itself (the tool never calls `gh`; Claude Code do
 populate the payload) — the note is purely so a user without `gh` installed understands why the
 PR segment never appears rather than assuming a bug.
 
-### D13. `context_window_size` was 1000000, not 200000
+### D13. `copyRuntime` rolls back on a failed swap
+
+**Deviation from the plan.** §14's `copyRuntime` retires the existing install (`rename` to
+`.old-<pid>`) and then renames staging into place. If that second rename fails, the plan's version
+leaves the user with **no install at all** — the old one retired under a temp name, the new one
+never moved in.
+
+**Decision:** wrap the final rename; on failure, rename the retired directory back and delete
+staging before rethrowing. Costs four lines and converts a total-loss failure into a no-op.
+
+Consistent with the module's existing philosophy (never `rm` the live install before the
+replacement exists) — the plan just didn't carry it through the last step.
+
+### D14. `context_window_size` was 1000000, not 200000
 
 This account runs a 1M-token context. `used_percentage` is already normalized against the
 real window size, so the context bar needs no change — but it confirms that reading
