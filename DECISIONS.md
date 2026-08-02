@@ -248,3 +248,38 @@ been exercised on `ubuntu-latest` per the plan, but any Windows contributor runn
 This account runs a 1M-token context. `used_percentage` is already normalized against the
 real window size, so the context bar needs no change — but it confirms that reading
 `used_percentage` directly (rather than deriving it from token counts) was the right call.
+
+### D17. Bare `npx ampline-claude` with no TTY and no flag silently does nothing
+
+Post-publish real-world testing (not fixtures): ran the actual published package against Carter's
+real `settings.json` — `npx ampline-claude` (no args) from a non-interactive shell (this session's
+Bash tool has no TTY) fell through to **statusline mode**, not the installer, and printed a
+rendered-looking line to stdout instead of installing anything. Confirmed via hash: `settings.json`
+was byte-identical before and after, no install directory created.
+
+**Root cause:** `bin/ampline-claude.js`'s `main()` decides installer-vs-statusline on
+`process.stdin.isTTY`, which is correct and load-bearing — Claude Code itself invokes the exact
+same entry point with piped, non-TTY stdin on every real render. There is no way to distinguish
+"a human ran this bare, from a script, meaning to install" from "Claude Code is rendering" using
+TTY alone, since both are non-TTY.
+
+**Not a bug in the installer logic** — `npx ampline-claude --install` (documented in the README as
+the explicit alternative) works correctly regardless of TTY, verified in the same session: real
+install (17 files copied, settings.json correctly repointed, all real hooks preserved) followed by
+real uninstall (install dir and cache dir removed, statusLine/subagentStatusLine keys removed, all
+other settings preserved) — both independently verified against Carter's actual machine, not a
+throwaway test home.
+
+**The actual gap:** silence. A scripted/automated `npx ampline-claude` invocation with no TTY and
+no `--install` flag neither installs nor errors — it just prints something to stdout and exits 0,
+giving no signal that nothing happened. Someone automating install (a dotfiles script, a setup
+script) who doesn't pass `--install` would see no error and have no clue.
+
+**Decision: left as-is for now**, not fixed in this pass. The documented workaround
+(`npx ampline-claude --install`) already fully covers this for anyone who reads the README, and
+the realistic audience for the bare command is an interactive human in a real terminal, where TTY
+detection works correctly. A low-risk future improvement, if this bites someone for real: when
+stdin arrives genuinely empty within the timeout AND not `--subagent`, print a one-line hint to
+**stderr** (never stdout, to avoid corrupting a real render) suggesting `--install`. Not implemented
+because it adds a branch to the entry point's dispatch logic for a scenario that has a documented
+workaround and has not caused a real problem yet — revisit only if it does.
