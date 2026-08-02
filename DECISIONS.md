@@ -149,7 +149,30 @@ module in this project that can destroy a user's configuration. Discoverability 
 more cheaply by the existing install footer, which already prints the uninstall and
 config paths.
 
-### D10. `context_window_size` was 1000000, not 200000
+### D11. Bar width resolved to 8 cells
+
+Resolves the first open question in §20 (plan default was 6).
+
+**Decision:** `BAR_WIDTH = 8`, chosen by Carter after a side-by-side comparison of 6/8/10 rendered
+against real percentages (1%, 8%, 23%, 50%, 62%, 87%, 99%) in the Phase 2 visual review. 8 gives
+9 fill states at ~12.5%/block — a visibly finer read than 6's 7 states/16.7%-block — for two extra
+columns, without reaching 10's 10%/block precision that starts crowding the line.
+
+### D13. Stale marker stays dim-only, no `~` prefix
+
+Resolves the fourth open question in §20.
+
+**Decision:** no code change — `renderBar`'s existing `opts.stale` path (dim, no danger color,
+no bold, no glyph) is correct as specified. Considered and rejected an additional `~` prefix.
+
+**Why:** a stale bar already carries **zero danger color** while every live bar carries at least
+green — that contrast (colored vs. uncolored), not brightness, is the real signal, and it survives
+even in terminals that ignore the DIM SGR attribute outright. An explicit `~` would be a legible
+backup for that edge case, but it costs a column on an already tight line and sits visually close
+to the `↺` reset-countdown glyph a few characters to its right. Revisit only if real usage shows
+the dim treatment getting missed.
+
+### D14. `context_window_size` was 1000000, not 200000
 
 This account runs a 1M-token context. `used_percentage` is already normalized against the
 real window size, so the context bar needs no change — but it confirms that reading
