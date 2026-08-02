@@ -1,1 +1,32 @@
-# todo fill gitignore file 
+# Dependencies
+node_modules/
+
+# npm packaging artifacts
+*.tgz
+npm-debug.log*
+
+# Local env / editor
+.env
+.env.local
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Local config used while developing (users create their own)
+.amplinerc.json
+
+# Local build spec — intentionally never published
+*implementation-plan*.md
+*IMPLEMENTATION_PLAN*.md
+PLANNING.md
+
+# Debug payload dumps from Phase 1
+ampline-debug.json
+ampline-debug*.jsonl
+
+# Local progress tracking
+PROGRESS.md
+
+# Test output
+coverage/
