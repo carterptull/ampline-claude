@@ -275,11 +275,10 @@ no `--install` flag neither installs nor errors — it just prints something to 
 giving no signal that nothing happened. Someone automating install (a dotfiles script, a setup
 script) who doesn't pass `--install` would see no error and have no clue.
 
-**Decision: left as-is for now**, not fixed in this pass. The documented workaround
-(`npx ampline-claude --install`) already fully covers this for anyone who reads the README, and
-the realistic audience for the bare command is an interactive human in a real terminal, where TTY
-detection works correctly. A low-risk future improvement, if this bites someone for real: when
-stdin arrives genuinely empty within the timeout AND not `--subagent`, print a one-line hint to
-**stderr** (never stdout, to avoid corrupting a real render) suggesting `--install`. Not implemented
-because it adds a branch to the entry point's dispatch logic for a scenario that has a documented
-workaround and has not caused a real problem yet — revisit only if it does.
+**Decision: implemented**, shortly after this entry was first written (`Fixed empty stdin bug.`,
+`Fixed test file to support the stderr fixture.`). When stdin arrives genuinely empty within the
+timeout and `--subagent` was not passed, `bin/ampline-claude.js` writes one line to **stderr**
+only — "ampline-claude: no input received — if you meant to install, run `npx ampline-claude
+--install`" — and never touches stdout. Verified byte-for-byte that stdout is unaffected.
+Covered by `test/run.js`: `empty.txt` asserts the stderr hint fires (`expectStderr`), `full.json`
+asserts it does not (`refuteStderr`), so a real render can never regress into printing it.

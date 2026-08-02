@@ -123,6 +123,11 @@ non-zero exit from the statusline path, never a partial/garbled line. Specifical
 - The entry point (`bin/ampline-claude.js`) has a 500ms stdin timeout and writes+exits from
   the stdout callback, never immediately after `write()` — stdout to a pipe is asynchronous
   on Windows, and exiting too early truncates the output.
+- One narrow, deliberate exception to "stderr is debug only": if stdin arrives genuinely empty
+  (outside `--subagent` mode), the entry point writes a one-line install hint to stderr. This
+  never fires during a real Claude Code render — real renders always pipe a payload — so it
+  doesn't contradict stdout-is-the-product; it only helps a human or script that ran the bare
+  command with no input to install. See DECISIONS.md D17.
 
 ## Cache TTLs
 
