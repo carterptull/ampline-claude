@@ -230,6 +230,16 @@ parse error instead. Every statusline render either prints something or prints n
 never hangs and never exits non-zero.
 </details>
 
+<details>
+<summary>I ran `npx ampline-claude` from a script and nothing installed — why?</summary>
+
+`npx ampline-claude` with no flags installs when run from an interactive terminal (TTY
+detected). From a non-interactive shell — a dotfiles script, CI — there's no TTY to detect,
+and Claude Code's own real renders look the same way on stdin. If stdin also turns out to be
+genuinely empty, it prints a one-line hint to stderr pointing at the explicit flag; either
+way, use `npx ampline-claude --install` in scripts to install unconditionally.
+</details>
+
 ## Known limitations
 
 - **Truecolor terminals only.** The wheel and the danger ramp both use 24-bit ANSI color

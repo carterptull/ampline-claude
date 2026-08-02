@@ -71,6 +71,13 @@ function main() {
     if (timer) clearTimeout(timer);
     try { process.stdin.pause(); } catch {}
 
+    // Empty stdin with no --install/TTY means the installer path never ran
+    // and nothing was piped either — most likely a scripted `npx ampline-claude`
+    // with no flag. stderr only; never touches stdout or the exit path.
+    if (!raw && !isSubagent) {
+      try { process.stderr.write('ampline-claude: no input received — if you meant to install, run `npx ampline-claude --install`\n'); } catch {}
+    }
+
     let out = '';
     try {
       const data = parseInput(raw);
