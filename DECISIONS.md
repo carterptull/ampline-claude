@@ -149,7 +149,7 @@ module in this project that can destroy a user's configuration. Discoverability 
 more cheaply by the existing install footer, which already prints the uninstall and
 config paths.
 
-### D11. Bar width resolved to 8 cells
+### D10. Bar width resolved to 8 cells
 
 Resolves the first open question in §20 (plan default was 6).
 
@@ -158,7 +158,7 @@ against real percentages (1%, 8%, 23%, 50%, 62%, 87%, 99%) in the Phase 2 visual
 9 fill states at ~12.5%/block — a visibly finer read than 6's 7 states/16.7%-block — for two extra
 columns, without reaching 10's 10%/block precision that starts crowding the line.
 
-### D13. Stale marker stays dim-only, no `~` prefix
+### D11. Stale marker stays dim-only, no `~` prefix
 
 Resolves the fourth open question in §20.
 
@@ -172,7 +172,34 @@ backup for that edge case, but it costs a column on an already tight line and si
 to the `↺` reset-countdown glyph a few characters to its right. Revisit only if real usage shows
 the dim treatment getting missed.
 
-### D14. `context_window_size` was 1000000, not 200000
+### D12. Live `pr` capture — confirmed the field requires `gh` CLI installed *and* authenticated
+
+D8 committed to verifying the `pr` field against a real payload before shipping `segments/pr.js`
+unverified. Carter opened a real PR (carterptull/ampline-claude#1) against this branch and pushed
+it himself. First attempt: 35 fresh captures with the PR open, zero carrying a `pr` field. `gh`
+was confirmed absent from the machine at that point (checked both Git Bash and PowerShell `PATH`),
+so that was recorded as the likely-but-unconfirmed cause.
+
+**Confirmed on retry:** after Carter installed `gh` (`gh --version` → 2.97.0) and it turned out to
+already be authenticated (`gh auth status` → logged in as `carterptull`), the exact same dump
+technique captured `pr` populated in 7 of 9 fresh renders, immediately:
+
+```json
+{ "number": 1, "url": "https://github.com/carterptull/ampline-claude/pull/1", "review_state": "pending" }
+```
+
+Shape matches §1.1 exactly. `renderPrSegment` verified against this real object: renders `#1` in
+the `pending` yellow, correctly.
+
+**Decision:** no code change needed — `pr.js` was already correct, just unverified. This closes
+the last open item from D7/D8. **`gh` CLI (installed and authenticated) is a real, undocumented
+runtime precondition for the `pr` field** — not stated anywhere in the plan's field reference, and
+worth a line in the README FAQ/limitations section in Phase 7. It does not need to be a stated
+dependency of `ampline-claude` itself (the tool never calls `gh`; Claude Code does, internally, to
+populate the payload) — the note is purely so a user without `gh` installed understands why the
+PR segment never appears rather than assuming a bug.
+
+### D13. `context_window_size` was 1000000, not 200000
 
 This account runs a 1M-token context. `used_percentage` is already normalized against the
 real window size, so the context bar needs no change — but it confirms that reading
