@@ -1,0 +1,11 @@
+{
+  "segments": [
+    "dir", "git", "model", "context",
+    "fiveHour", "weekly", "cost", "task", "pr"
+  ],
+  "line2From": "fiveHour",
+  "separator": " │ ",
+  "color": true,
+  "maxBranchLength": 24,
+  "maxTaskLength": 40
+}

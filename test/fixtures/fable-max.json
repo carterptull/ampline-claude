@@ -1,0 +1,11 @@
+{
+  "session_id": "fixture-fable-max",
+  "cwd": "/tmp/project",
+  "model": { "id": "claude-fable-5", "display_name": "Fable 5" },
+  "effort": { "level": "max" },
+  "workspace": {
+    "current_dir": "/tmp/project",
+    "repo": { "host": "github.com", "owner": "carterptull", "name": "ampline-claude" }
+  },
+  "context_window": { "used_percentage": 96, "remaining_percentage": 4 }
+}

@@ -1,0 +1,11 @@
+{
+  "session_id": "fixture-opus-xhigh",
+  "cwd": "/tmp/project",
+  "model": { "id": "claude-opus-5", "display_name": "Opus 5" },
+  "effort": { "level": "xhigh" },
+  "workspace": {
+    "current_dir": "/tmp/project",
+    "repo": { "host": "github.com", "owner": "carterptull", "name": "ampline-claude" }
+  },
+  "context_window": { "used_percentage": 87, "remaining_percentage": 13 }
+}
