@@ -1,0 +1,11 @@
+{
+  "session_id": "fixture-unknown-model",
+  "cwd": "/tmp/project",
+  "model": { "id": "claude-nebula-7", "display_name": "Nebula 7" },
+  "effort": { "level": "high" },
+  "workspace": {
+    "current_dir": "/tmp/project",
+    "repo": { "host": "github.com", "owner": "carterptull", "name": "ampline-claude" }
+  },
+  "context_window": { "used_percentage": 33, "remaining_percentage": 67 }
+}
