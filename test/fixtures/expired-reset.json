@@ -1,0 +1,10 @@
+{
+  "session_id": "fixture-expired-reset",
+  "cwd": "/tmp/project",
+  "model": { "id": "claude-sonnet-5", "display_name": "Sonnet 5" },
+  "effort": { "level": "high" },
+  "context_window": { "used_percentage": 40, "remaining_percentage": 60 },
+  "rate_limits": {
+    "five_hour": { "used_percentage": 60, "resets_at": 1735689600 }
+  }
+}
