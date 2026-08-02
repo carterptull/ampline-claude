@@ -24,7 +24,7 @@ function makeTempHome() {
 // fixture -> assertions. `expect` is a substring required in stdout;
 // `refute` must not appear. Omit both to assert only "does not crash".
 const EXPECTATIONS = {
-  'full.json':                 { expect: ['Opus', '#1234'], refute: ['NaN', 'undefined'] },
+  'full.json':                 { expect: ['Opus', '#1234'], refute: ['NaN', 'undefined'], refuteStderr: ['no input received'] },
   'haiku-no-effort.json':      { refute: ['high', 'NaN'] },
   'sonnet-low.json':           { expect: ['low'], refute: ['NaN'] },
   'sonnet-max.json':           { expect: ['max'], refute: ['NaN'] },
@@ -43,7 +43,7 @@ const EXPECTATIONS = {
   'worktree.json':             { refute: ['NaN', 'undefined'] },
   'subagent-tasks.json':       { refute: ['NaN', 'local_agent'] },
   'malformed.txt':             { refute: ['NaN'] },
-  'empty.txt':                 { refute: ['NaN'] },
+  'empty.txt':                 { refute: ['NaN'], expectStderr: ['no input received', '--install'] },
 };
 
 let failures = 0;
@@ -81,6 +81,12 @@ function runFixture(name) {
   }
   for (const needle of rules.refute || []) {
     if (res.stdout.includes(needle)) return fail(name, `stdout must not contain ${JSON.stringify(needle)}`);
+  }
+  for (const needle of rules.expectStderr || []) {
+    if (!res.stderr.includes(needle)) return fail(name, `expected stderr to contain ${JSON.stringify(needle)}`);
+  }
+  for (const needle of rules.refuteStderr || []) {
+    if (res.stderr.includes(needle)) return fail(name, `stderr must not contain ${JSON.stringify(needle)}`);
   }
 
   console.log(`  ok    ${name}`);
