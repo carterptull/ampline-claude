@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-02
+
 ### Added
 - Initial implementation: 16-step model/effort color wheel, context and rate-limit usage bars,
   git state, session cost, current task, open PR, and subagent panel rows.
