@@ -5,10 +5,10 @@
 [![license](https://img.shields.io/npm/l/ampline-claude.svg)](https://github.com/carterptull/ampline-claude/blob/main/LICENSE)
 [![CI](https://github.com/carterptull/ampline-claude/actions/workflows/ci.yml/badge.svg)](https://github.com/carterptull/ampline-claude/actions/workflows/ci.yml)
 
-A color-graded, zero-dependency statusline for Claude Code, by **Paymon Software**. Its
-signature feature is a continuous 16-step color wheel across the model × effort space — no
-other Claude Code statusline shows what's running and how hard at a glance, in color, on one
-line.
+**Amplify your statusline.** ampline-claude is a color-graded, zero-dependency statusline for
+Claude Code, built by Paymon Software. Its signature feature is a continuous 16-step color
+wheel across the model and effort space. No other Claude Code statusline shows you what's
+running and how hard, in color, at a glance, on one line.
 
 ![ampline-claude preview](https://github.com/carterptull/ampline-claude/raw/main/preview.png)
 
@@ -30,16 +30,16 @@ line.
 npx ampline-claude
 ```
 
-That's it — it installs itself into `~/.claude/settings.json` and copies its runtime to
+That's it. It installs itself into `~/.claude/settings.json` and copies its runtime to
 `~/.claude/hooks/ampline-claude/`. Restart Claude Code or start a new session to see it.
 
 <details>
 <summary>Manual install (editing settings.json yourself)</summary>
 
-Run `npx ampline-claude --install` once anyway — it's what copies the runtime to a stable
+Run `npx ampline-claude --install` once anyway. That's what copies the runtime to a stable
 location. Then, if you'd rather manage the config yourself, add entries shaped like this to
-`~/.claude/settings.json`, using **your own absolute path** (shown below as a placeholder —
-`~` is not expanded by `cmd.exe`, so copy-pasting it literally will not work):
+`~/.claude/settings.json`, using **your own absolute path** (shown below as a placeholder,
+since `~` isn't expanded by `cmd.exe` and copy-pasting it literally won't work):
 
 ```json
 {
@@ -57,7 +57,7 @@ location. Then, if you'd rather manage the config yourself, add entries shaped l
 ```
 
 The exact `command` value the installer writes for your machine is the fastest way to get this
-right — run the installer once, then copy `statusLine.command` straight out of the
+right. Run the installer once, then copy `statusLine.command` straight out of the
 `settings.json` it produced.
 
 </details>
@@ -78,9 +78,9 @@ npx ampline-claude uninstall
 
 Removes the `statusLine`/`subagentStatusLine` entries from `settings.json` (backing up the
 file first), deletes `~/.claude/hooks/ampline-claude/`, and clears the cache. If your
-`settings.json` points at a different statusline, uninstall refuses to touch it — but note the
-install side is asymmetric: installing over an existing foreign `statusLine` prints a notice
-and then replaces it.
+`settings.json` points at a different statusline, uninstall refuses to touch it. Installing
+works a bit differently though: installing over an existing foreign `statusLine` prints a
+notice and then replaces it.
 
 Other flags: `npx ampline-claude --version` prints the installed version, `--help` prints
 usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare commands above.
@@ -90,8 +90,8 @@ usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare
 | Segment | Example | Notes |
 |---|---|---|
 | Directory | `ampline-claude` | repo name as Claude Code reports it, falls back to the folder name |
-| Git | `⎇ main ↑2 ●` | branch, ahead/behind, dirty (`●`) or clean (`✓`) — `✓` means no *tracked* changes; new untracked files alone still show clean, see below |
-| Model + effort | `Opus 5 · high` | the 16-step wheel — see below |
+| Git | `⎇ main ↑2 ●` | branch, ahead/behind, dirty (`●`) or clean (`✓`). `✓` means no *tracked* changes, see below |
+| Model + effort | `Opus 5 · high` | the 16-step wheel, see below |
 | Context | `C34 ███░░░░░` | context-window usage, green→red |
 | 5-hour usage | `H93 ███████░ ↺ 4h28m` | rate-limit window, with reset countdown |
 | Weekly usage | `W17 █░░░░░░░ ↺ 2d23h` | same shape, 7-day window |
@@ -108,13 +108,14 @@ ampline-claude │ ⎇ main ✓ │ Opus 5 · high │ C34 ███░░░░
 Wraps to two lines automatically when it doesn't fit `COLUMNS`.
 
 **Git dirty is a deliberate narrower check.** For speed, the one `git status` call ampline-claude
-makes skips untracked files (`--untracked-files=no`). A repo whose only change is a handful of new,
-not-yet-`git add`ed files still shows `✓` — the marker tracks staged/modified/deleted files, not
-"is the working tree identical to HEAD." `git status` in your terminal remains the source of truth.
+makes skips untracked files (`--untracked-files=no`). A repo whose only change is a handful of
+new, not-yet-`git add`ed files still shows `✓`. The marker tracks staged, modified, and deleted
+files, not whether your working tree matches HEAD exactly. `git status` in your terminal is
+still the source of truth.
 
 ## The color wheel
 
-One continuous sweep — model tier picks the region, effort picks the position within it.
+One continuous sweep. Model tier picks the region, effort picks the position within it.
 Blue → cyan → green → yellow → orange → red → pink → violet → purple.
 
 | # | Model | Effort | Color | Hex |
@@ -136,20 +137,20 @@ Blue → cyan → green → yellow → orange → red → pink → violet → pu
 | 14 | Fable 5 | xhigh | magenta | `#B300D8` |
 | 15 | Fable 5 | max | purple | `#8000C0` |
 
-Haiku has no effort levels, so it's a flat color. `max` renders **bold** everywhere else in
-the sweep is non-bold — it's the one effort level loud enough to earn it.
+Haiku has no effort levels, so it's a flat color. Every other level renders un-bold except
+`max`, which is bold. It's the one effort level loud enough to earn it.
 
-**Why usage bars don't use the wheel.** Context and rate-limit usage get a separate,
-deliberately conventional green→yellow→orange→red→darkest-red ramp instead, bolding at 85%
-and adding a `⚠` at 95%. This is the whole design thesis: **color = identity, bold =
-urgency.** The wheel tells you *what's running*; the ramp tells you *when to worry*. Mixing
-them — letting pink or violet show up in a usage bar — would turn a glance into a decode.
+**Why usage bars don't use the wheel.** Context and rate-limit usage get a separate, plain
+green→yellow→orange→red→darkest-red ramp instead, bolding at 85% and adding a `⚠` at 95%.
+Color tells you what's running. Bold tells you when to worry. The wheel answers *what's
+running*, the ramp answers *when to worry*, and mixing them (letting pink or violet show up in
+a usage bar) would turn a glance into something you have to decode instead of just see.
 
 ## Configuration
 
 Drop a `.amplinerc.json` in your project root (or `~/.amplinerc.json` for a global default).
-The nearest one wins — searched from the current directory upward to the filesystem root,
-then your home directory. No merging between files.
+The nearest one wins. It searches from the current directory upward to the filesystem root,
+then your home directory. Files don't merge together.
 
 ```json
 {
@@ -174,53 +175,52 @@ then your home directory. No merging between files.
 | `maxBranchLength` | number | `24` | branch name truncation |
 | `maxTaskLength` | number | `40` | task text truncation |
 
-Invalid values are corrected silently rather than raising an error — consistent with how the
-tool degrades everywhere else. See `.amplinerc.json.example` in this repo for a starting point.
+Invalid values get corrected silently instead of raising an error, the same way the tool
+degrades everywhere else. See `.amplinerc.json.example` in this repo for a starting point.
 
 ## How it works
 
-Claude Code pipes a JSON payload to the statusline command's **stdin** on every render, and
-captures stdout — no TTY, so no `tput cols`; width comes from `COLUMNS` in the environment
-instead (falling back to a sane default if it's ever unset). The process has to exit fast: if
-a new render triggers while the script is still running, Claude Code cancels it, so the real
-failure mode isn't slowness, it's *no statusline at all*.
+Claude Code pipes a JSON payload to the statusline command's **stdin** on every render and
+captures stdout. There's no TTY, so no `tput cols`. Width comes from `COLUMNS` in the
+environment instead, falling back to a sane default if it's ever unset. The process has to
+exit fast too: if a new render fires while the script is still running, Claude Code just
+cancels it. So the real failure mode here isn't slowness, it's *no statusline at all*.
 
-**Config directory.** `~/.claude` is the default location for settings, cache, and installed
-runtime, but `CLAUDE_CONFIG_DIR` is honored everywhere if you've redirected it — the installer,
-cache, and task segment all resolve through the same override.
+**Config directory.** `~/.claude` is the default location for settings, cache, and the
+installed runtime. If you've redirected it with `CLAUDE_CONFIG_DIR`, ampline-claude follows
+along. The installer, cache, and task segment all resolve through the same override.
 
 **Usage bars, cached.** `rate_limits` is absent from stdin until the first API response of a
-session. Rather than filling that gap with a network call — which would mean reading your
-OAuth token and adding a dependency on an undocumented endpoint — every `rate_limits` value
-received is written through to a local cache. On a cold start, the bars appear instantly
-showing the last-known values, dimmed to signal staleness, then snap to live the moment the
-first response lands.
+session. We could fill that gap with a network call, but that would mean reading your OAuth
+token and depending on an undocumented endpoint, so instead every `rate_limits` value gets
+written through to a local cache. On a cold start, the bars appear instantly showing the
+last-known values, dimmed to signal they're stale, then snap to live the moment the first
+response lands.
 
-**Degradation.** Every segment either renders or returns nothing — never a crash, never a
-hang. Missing data means that one segment is silently omitted; the rest of the line still
-renders.
+**Degradation.** Every segment either renders or returns nothing. Never a crash, never a hang.
+If data's missing, that one segment just gets skipped and the rest of the line still renders.
 
 More detail:
-- [`CLAUDE.md`](CLAUDE.md) — module architecture, frozen interfaces, the rules that apply everywhere
-- [`DECISIONS.md`](DECISIONS.md) — every design decision and why, including where the live
+- [`CLAUDE.md`](CLAUDE.md): module architecture, frozen interfaces, the rules that apply everywhere
+- [`DECISIONS.md`](DECISIONS.md): every design decision and why, including where the live
   Claude Code payload disagreed with documentation
-- [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each version
-- [`SECURITY.md`](SECURITY.md) — how to report a vulnerability
+- [`CHANGELOG.md`](CHANGELOG.md): what shipped in each version
+- [`SECURITY.md`](SECURITY.md): how to report a vulnerability
 
 ## FAQ
 
 <details>
 <summary>Does this use extra API tokens or slow Claude Code down?</summary>
 
-No. It runs entirely locally — no API calls of any kind. Rendering is a handful of file reads
-and, at most, one cached `git status` call per 5 seconds. Typical render time is a few
-milliseconds; the worst case (a cache miss on a large repo) is capped at 400ms.
+No. It runs entirely locally, no API calls of any kind. Rendering is a handful of file reads
+and, at most, one cached `git status` call every 5 seconds. Typical render time is a few
+milliseconds. The worst case, a cache miss on a large repo, is capped at 400ms.
 </details>
 
 <details>
 <summary>Is the session cost my actual bill?</summary>
 
-No — it's the client-side estimate Claude Code itself computes and exposes on stdin, not a
+No, it's the client-side estimate Claude Code itself computes and exposes on stdin, not a
 figure from your account. It also resets to `$0` on `/clear`, which is Claude Code's behavior,
 not a bug here.
 </details>
@@ -229,8 +229,8 @@ not a bug here.
 <summary>Does it work if I only have an API key, not a Claude.ai subscription?</summary>
 
 Yes, for everything except the two usage bars. `rate_limits` only appears on stdin for
-Claude.ai subscribers, and that presence is what gates the feature — never
-`ANTHROPIC_API_KEY`. Plenty of Max subscribers also export an API key for other tooling;
+Claude.ai subscribers, and that presence is what gates the feature, never
+`ANTHROPIC_API_KEY`. Plenty of Max subscribers also export an API key for other tooling, and
 gating on that variable would silently break usage bars for them.
 </details>
 
@@ -244,40 +244,40 @@ Code already sends on stdin.
 <details>
 <summary>Can it break Claude Code?</summary>
 
-The installer never overwrites a `settings.json` it can't parse — it aborts and prints the
-parse error instead. Every statusline render either prints something or prints nothing; it
-never hangs and never exits non-zero.
+The installer never overwrites a `settings.json` it can't parse. It aborts and prints the
+parse error instead. And every statusline render either prints something or prints nothing.
+It never hangs and never exits non-zero.
 </details>
 
 <details>
-<summary>I ran `npx ampline-claude` from a script and nothing installed — why?</summary>
+<summary>I ran `npx ampline-claude` from a script and nothing installed, why?</summary>
 
 `npx ampline-claude` with no flags installs when run from an interactive terminal (TTY
-detected). From a non-interactive shell — a dotfiles script, CI — there's no TTY to detect,
-and Claude Code's own real renders look the same way on stdin. If stdin also turns out to be
-genuinely empty, it prints a one-line hint to stderr pointing at the explicit flag; either
-way, use `npx ampline-claude --install` in scripts to install unconditionally.
+detected). From a non-interactive shell, like a dotfiles script or CI, there's no TTY to
+detect, and Claude Code's own real renders look the same way on stdin. If stdin also turns out
+to be genuinely empty, it prints a one-line hint to stderr pointing at the explicit flag.
+Either way, use `npx ampline-claude --install` in scripts to install unconditionally.
 </details>
 
 ## Known limitations
 
 - **Truecolor terminals only.** The wheel and the danger ramp both use 24-bit ANSI color
-  (`\x1b[38;2;r;g;bm`). No ANSI-16 fallback yet — on a terminal without truecolor support,
-  colors will render incorrectly rather than degrading gracefully. Set `NO_COLOR=1` to opt
-  out of color entirely.
+  (`\x1b[38;2;r;g;bm`). There's no ANSI-16 fallback yet, so on a terminal without truecolor
+  support, colors will render incorrectly instead of degrading gracefully. Set `NO_COLOR=1`
+  to opt out of color entirely.
 - **Opus `max` and Fable `low` sit next to each other in the wheel.** Both are meant to read
   as "spending a lot," which is intentional, but the exact hue boundary between them is close.
-- **Usage bars need one API response before they first appear** on a brand-new install — the
+- **Usage bars need one API response before they first appear** on a brand-new install. The
   write-through cache has nothing to show until then.
 - **The PR segment requires the `gh` CLI installed and authenticated** on the machine Claude
   Code runs on. This is a precondition of how Claude Code itself resolves the current
-  branch's PR status, not something `ampline-claude` calls directly — without it, `pr`
-  simply doesn't appear, the same as if there were no open PR.
+  branch's PR status, not something `ampline-claude` calls directly. Without it, `pr` simply
+  doesn't appear, the same as if there were no open PR.
 - **macOS and Linux are supported by design but not yet verified on real hardware.** Every
   payload capture and install/uninstall test behind this project so far has run on Windows
-  (see `DECISIONS.md`). The code has no platform-specific branches and CI runs the full
-  fixture suite on all three OSes, but real-world confirmation on a Mac or Linux box —
-  glyph rendering, `nvm`-managed Node on a PATH-limited launch, etc. — is still outstanding.
+  (see `DECISIONS.md`). The code has no platform-specific branches, and CI runs the full
+  fixture suite on all three OSes, but real-world confirmation on a Mac or Linux box (glyph
+  rendering, `nvm`-managed Node on a PATH-limited launch, and so on) is still outstanding.
 
 ---
 
