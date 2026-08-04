@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-04
+
+### Changed
+- Rewrote the README's explanatory prose for a plainer, more human tone: no em dashes or
+  semicolons, shorter sentences, and a "color tells you what's running, bold tells you when to
+  worry" framing instead of "design thesis" language. No functional or configuration changes;
+  tables, code samples, and links are unchanged.
+
 ## [0.3.0] - 2026-08-04
 
 Pre-release hardening pass: security review, cross-platform correctness, and account-tier
