@@ -282,3 +282,249 @@ only — "ampline-claude: no input received — if you meant to install, run `np
 --install`" — and never touches stdout. Verified byte-for-byte that stdout is unaffected.
 Covered by `test/run.js`: `empty.txt` asserts the stderr hint fires (`expectStderr`), `full.json`
 asserts it does not (`refuteStderr`), so a real render can never regress into printing it.
+
+---
+
+## Phase 2 — Pre-1.0 hardening pass (targeting v0.3.0)
+
+Triggered by an explicit request for a security + release-readiness review before any public
+1.0 tag. Five independent reviews ran in parallel (security/attack-surface, POSIX portability,
+account-tier compatibility, core-logic correctness, release/packaging) against the v0.2.0 code.
+One finding (D18) was verified directly, not just reported, before acting on it — same standard
+Phase 1 held payload claims to.
+
+### D18. CRLF shebang made `npx ampline-claude` fail on every non-Windows machine
+
+**This was the release blocker.** `core.autocrlf=true` on this (Windows) dev machine, no
+`.gitattributes`, so every tracked `.js` file's working tree copy carried `\r\n` — including
+`bin/ampline-claude.js`'s first line: `#!/usr/bin/env node\r`. Verified directly:
+
+```
+working tree:  #!/usr/bin/env node \r \n     <- what `npm pack` ships
+git blob:      #!/usr/bin/env node \n        <- what a fresh clone gets (git normalizes on commit)
+```
+
+`npm pack`/`npm publish` archive the **working tree**, not git blobs, and are unaffected by
+git's own line-ending normalization. On POSIX, the kernel reads the shebang line and `env`
+looks for a binary literally named `node\r`, which doesn't exist: `env: 'node\r': No such file
+or directory`, exit 127 — before any statusline code runs. The published v0.2.0 tarball was
+built on this same machine and almost certainly carries this.
+
+**Why the existing 3-OS × 3-Node CI matrix never caught it:** three gaps line up. CI checks out
+fresh on Linux, which materializes git's *normalized* LF blobs, so the CRLF working-tree state
+never exists there. `test/run.js` invokes the binary as `spawnSync(process.execPath, [BIN])` —
+explicitly through `node`, bypassing the shebang line entirely. And the `pack` job only ever
+inspected the tarball's file *list* (`scripts/verify-pack.js`), never file *contents*. The
+defect lived only in an artifact built on a Windows checkout, on a path none of the three
+guardrails modeled.
+
+**Decision:** add `.gitattributes` (`* text=auto eol=lf`, explicit for `*.js`) and normalize the
+working tree to LF. Not sufficient on its own — see D20 for the durable fix, since a
+`.gitattributes` file only prevents *this* checkout from reintroducing the bug, not a future
+Windows contributor's.
+
+### D19. Terminal escape sanitization — untrusted strings were reaching stdout unfiltered
+
+The security review's sharpest finding: `.amplinerc.json` is loaded by walking **up from cwd**
+(`config.js`), so a config file *committed to a repository* loads automatically the first time
+that repo is opened. Every other config key was validated (`segments` allowlisted, numbers
+range-checked), but `separator` was only type-checked, then joined straight into stdout
+(`layout.js`). A repo shipping
+`{"separator": "]8;;https://evil.example click here ]8;;"}` would render
+an attacker-controlled OSC 8 hyperlink on every refresh — no prompt, no consent required.
+
+The same gap existed for every other foreign string reaching a segment unfiltered: git branch
+name (from `.git/HEAD`), `workspace.repo.name`, cwd basename, todo text (from
+`~/.claude/todos/*.json` — model-authored, so a prompt-injected session could plant an escape
+that persists across every future render), and subagent `label`/`description` (also
+model-authored). `stripAnsi` already existed in `colors.js` and correctly handled both SGR and
+OSC sequences, but was only ever applied when `config.color === false` — the exact control that
+would have prevented this was present, correct, and unreachable in the default colored path
+every user runs.
+
+**Decision:** add `colors.js: sanitize(s)` — strips C0/C1 control characters (including ESC,
+DEL, and the CSI/OSC bytes 0x9b/0x9d) and the Unicode line/paragraph separators U+2028/U+2029.
+Applied at the point each foreign string is read, before any truncation or interpolation:
+branch name, dir/repo name, task text, subagent label/description, model `display_name`/`id`,
+and config `separator`. Deliberately narrow (control chars only, not a general allowlist) so it
+can't reject legitimate Unicode in branch names or todo text. As a side effect, this also closes
+a correctness bug the logic review found independently: `separator: "\n"` used to produce a
+5-line statusline (LF is a control character, now stripped).
+
+### D20. `git status` hardened against a hostile `.git/config`
+
+`git status` runs the `core.fsmonitor` hook command from the repo's own `.git/config`, and
+ampline-claude fires this **automatically on every render** — merely opening Claude Code in a
+directory obtained as an archive (not a `clone`, which doesn't transfer `.git/config`) with a
+crafted fsmonitor command is arbitrary code execution with no git command ever typed by the
+user.
+
+**Decision:** add `-c core.fsmonitor=` (disables it for this call only) and `--no-optional-locks`
+to the `execFileSync('git', ...)` argv in `git.js`. The second flag is independently worth
+having regardless of the security angle — without it, the statusline was taking the index lock
+every 30s (`refreshInterval`) and could contend with a concurrent interactive git command.
+
+### D21. Surrogate-pair-unsafe truncation fixed in three segments
+
+`truncateBranch` (`git.js`), `decorate` (`task.js`), and `truncate` (`subagents.js`) all
+truncated with `.slice()`, which operates on UTF-16 code units, not code points. A branch name
+or todo text with an emoji near the truncation boundary could have its trailing character split
+mid-surrogate-pair, rendering a literal `�` in the statusline.
+
+**Decision:** switch all three to `Array.from(str)` before slicing, which iterates by code
+point. Deliberately not a full grapheme-cluster-aware truncation (combining marks, ZWJ
+sequences, flag sequences can still visually misbehave) — that's a materially bigger change
+for a cosmetic-at-worst failure mode once the mojibake case is closed, and is noted as a
+follow-up rather than done here.
+
+### D22. `pr.js` could render a phantom `#0`
+
+`Number(pr.number)` followed by `Number.isFinite` let `null`, `''`, `false`, and `[]` all pass
+through as `0` — a payload shaped like `pr: { number: null }` (plausible for "no PR, but the
+key is present") would render a fake `#0` PR link.
+
+**Decision:** require `Number.isInteger(number) && number > 0`. GitHub/GitLab issue and PR
+numbers start at 1, so this rejects nothing real.
+
+### D23. `usage.js: toMs()` guarded against a unit-confusion footgun
+
+D6 confirmed `resets_at` as 10-digit epoch **seconds** across 24 live captures, and `toMs()`
+multiplies every numeric value by 1000 on that assumption. If a future payload ever emitted
+milliseconds instead (13-digit), the multiply would land the result ~58,000 years in the
+future. Worse: `keepIfCurrent` only drops a cached window once it's *past* its reset time, so a
+value that can never appear "past" would stay wedged in the cache indefinitely, rendering an
+absurd countdown (`↺ 20646577d9h`) on every subsequent cold start.
+
+**Decision:** if the numeric value exceeds `1e11`, treat it as already milliseconds rather than
+multiplying — a real epoch-seconds value won't cross that threshold until the year ~5138. Also
+added a blanket sanity bound: reject any `resets_at` implying a reset more than 60 days out,
+regardless of which branch produced it. No legitimate rate-limit window resets that far out
+under any unit.
+
+### D24. `CLAUDE_CONFIG_DIR` honored via a new `lib/claudeDir.js`
+
+`os.homedir()/.claude` was hardcoded independently in `install.js`, `cache.js`, and
+`segments/task.js`. Claude Code itself honors `CLAUDE_CONFIG_DIR` for a redirected config
+location (roaming profiles, some org-managed setups); ignoring it meant the installer could
+report `✓ ampline-claude installed.` while writing to a `settings.json` Claude Code never reads
+— success output with zero actual effect, the worst failure mode for a support conversation.
+
+**Decision:** add `lib/claudeDir.js` exporting `claudeDir()`, resolving
+`process.env.CLAUDE_CONFIG_DIR || ~/.claude`. All three call sites now go through it. Kept as
+its own tiny module rather than folded into `cache.js` (which has no reason to be a dependency
+of `install.js`) or duplicated three times.
+
+**Explicitly not attempted this pass:** detecting an enterprise `managed-settings.json` that
+might override a user-level `statusLine`. Unlike `CLAUDE_CONFIG_DIR` (a documented Claude Code
+env var), the managed-settings precedence behavior is unverified from this account — the same
+caution D8 applied to the `pr` field (pause and verify against a real payload rather than ship
+a guess) applies here. A wrong heuristic that falsely warns a normal user is worse than no
+detection. Flagged as a real gap, not silently assumed away.
+
+### D25. Model segment length capped (extends D1)
+
+D1 committed to rendering `display_name` as-is because real values are short (~10-15 chars,
+e.g. "Sonnet 5"). That reasoning doesn't extend to the `|| model.id` fallback path, which on a
+Bedrock/Vertex/gateway model can be a 40-100+ char ARN or inference-profile id — unbounded, it
+would blow out the line and force a spurious two-line wrap.
+
+**Decision:** cap the rendered name at 32 chars (well above any real `display_name`, well below
+a pathological id) via the same `Array.from`-based code-point-safe truncation as D21. D1's
+core claim — a real display name is never truncated — is unaffected, since 32 chars never
+fires on one.
+
+### D26. `layout.js` gained a `COLUMNS` fallback
+
+D5 confirmed `COLUMNS` is set on Windows for the main-statusline invocation. It was never
+verified on macOS/Linux, and in bash/zsh `COLUMNS` is a shell variable, not an exported env
+var, by default — a child process only inherits it if the parent explicitly exports it.
+Previously, an unset/non-numeric `COLUMNS` disabled wrapping entirely: `layout()` would return
+a single line at any width.
+
+**Decision:** add `DEFAULT_COLUMNS = 120` as a fallback when `COLUMNS` doesn't parse. Chosen to
+match the value `test/run.js` already pins for the fixture suite, so the wrap path stays
+exercised by the same width it's tested at. Not a substitute for verifying what Claude Code
+actually passes on macOS/Linux — still an open item — but "wrap at a reasonable guess" is
+strictly better than "never wrap."
+
+### D27. `install.js` prefers `process.execPath` over a bare `node`
+
+The generated `statusLine.command` was `node "<entry>"`, relying on the child process's
+inherited PATH containing `node`. Reliable on Windows (`node` is almost always on the system
+PATH); not guaranteed on macOS/Linux with a version-managed Node (nvm/fnm/asdf keep `node` on a
+shell-init-managed PATH) if Claude Code is ever launched from a GUI context (Dock, Finder)
+rather than a terminal that sourced the shell init. The failure mode is a blank statusline
+indistinguishable from the degradation contract working as designed — no diagnostic at all.
+
+**Decision:** prefer the absolute `process.execPath` (the Node binary currently running the
+installer) when it resolves to a real file, falling back to `node` otherwise.
+**Trade-off accepted:** a version-specific nvm path (e.g.
+`~/.nvm/versions/node/v22.13.1/bin/node`) survives a later `nvm use` switching the *default*,
+since nvm doesn't delete prior versions on a version switch — it only breaks if that specific
+version is later uninstalled, which is rarer than the PATH gap it fixes. Unverified on real
+macOS/Linux hardware; flagged for confirmation alongside D18.
+
+### D28. `install.js` preserves `settings.json`'s file mode and symlink identity
+
+Two related gaps in `writeSettings`. First: the atomic write (tmp file + rename) created the
+tmp file at the umask default, then renamed it over the target — a user who'd deliberately
+`chmod 600`'d a `settings.json` holding API keys in `env` blocks would silently end up
+world-readable after any install/uninstall. Second: `renameSync` replaces a symlink with a
+plain file rather than writing through it — dotfiles managers (stow/chezmoi/yadm) commonly
+symlink `settings.json` into a tracked repo, and this would silently sever that link.
+
+**Decision:** `writeSettings` now resolves the real target via `fs.realpathSync` before writing
+(falls back to the plain path on `ENOENT`, i.e. a fresh install with no existing file), reads
+the original file's mode via `fs.statSync`, and `chmod`s the tmp file to match before the
+rename. Confirmed the install/uninstall round-trip still works end to end (backup, cache dir,
+runtime copy, statusline render through the installed copy) via a throwaway-`HOME` smoke test.
+**Not independently verifiable on Windows** — there are no real POSIX permission bits here, so
+`chmod 600` was a no-op in the test environment; the logic is straightforward (stat, chmod,
+rename) but needs confirmation on a POSIX box.
+
+### D29. `package.json` no longer declares `main`; `bin/ampline-claude.js` guards its own entry
+
+`main` pointed at the CLI entry point, and the entry point called `main()` unconditionally at
+module load. `require('ampline-claude')` — a REPL, a test harness, an accidental import —
+would run a real install as a side effect, mutating the importer's `~/.claude/settings.json`.
+
+**Decision:** drop `main` (a CLI package doesn't need one; `bin` is sufficient) and add
+`if (require.main === module) main();` regardless, so the behavior can't recur even if a `main`
+field is ever reintroduced for some other reason.
+
+### D30. `rateLimits.js` segments wrapped in `try/catch` for consistency
+
+CLAUDE.md states every `render*Segment(ctx)` wraps its body in `try/catch`. `renderFiveHourSegment`
+and `renderWeeklySegment` didn't — harmless in practice, since `render.js` already wraps every
+segment call site, but it made a documented invariant false in a public file.
+
+**Decision:** add the wrapper to both, matching every other segment, so the documented rule is
+actually true rather than merely "true because of a different layer."
+
+### D31. Git dirty semantics (`--untracked-files=no`) kept, not changed — now documented
+
+The logic and release reviews both independently flagged the same thing: a repo whose only
+change is new untracked files renders `✓` (clean), which reads as stronger than it is. The
+`--untracked-files=no` flag was a deliberate perf choice (avoids scanning untracked files,
+consistent with the "one git call, hard timeout, minimize subprocess cost" rule), not an
+oversight — but it was undocumented, so users would reasonably assume `✓` means "nothing
+changed" rather than "nothing tracked changed."
+
+**Decision:** keep the flag (changing it trades a real perf property for a case that's a
+narrower-than-expected signal, not a wrong one) and document it instead — in `README.md`'s
+segment table and a dedicated callout, and in `CLAUDE.md`'s module layout. Consistent with this
+project's established pattern (D9, D11) of resolving a surprising-but-intentional behavior by
+documenting it rather than changing it, unless the behavior is actually wrong.
+
+### D32. `NO_COLOR` stale-bar visibility (D11) — flagged, not reversed
+
+The logic review found that D11's justification ("a stale bar carries zero danger color while
+every live bar carries at least green — that contrast survives even in terminals that ignore
+DIM") only holds when color is enabled at all. Under `NO_COLOR=1`, a live 60%-usage bar and a
+stale 60%-usage bar render **byte-identical** — there is no stale signal whatsoever in the
+no-color path, which is exactly the gap D11's rejected `~` prefix would have covered.
+
+**Decision:** not resolved this pass. D11 was an explicit, deliberate call Carter made after a
+visual side-by-side review; reversing it unilaterally in a hardening pass isn't this session's
+call to make. Recorded here as a confirmed gap in the existing decision's own stated reasoning,
+for Carter to weigh directly rather than silently overridden or silently left inconsistent.

@@ -36,25 +36,29 @@ That's it — it installs itself into `~/.claude/settings.json` and copies its r
 <details>
 <summary>Manual install (editing settings.json yourself)</summary>
 
-Run `npx ampline-claude` once anyway — it's what copies the runtime to a stable location.
-Then, if you'd rather manage the config yourself, add this to `~/.claude/settings.json`:
+Run `npx ampline-claude --install` once anyway — it's what copies the runtime to a stable
+location. Then, if you'd rather manage the config yourself, add entries shaped like this to
+`~/.claude/settings.json`, using **your own absolute path** (shown below as a placeholder —
+`~` is not expanded by `cmd.exe`, so copy-pasting it literally will not work):
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "node \"~/.claude/hooks/ampline-claude/bin/ampline-claude.js\"",
+    "command": "node \"/absolute/path/to/.claude/hooks/ampline-claude/bin/ampline-claude.js\"",
     "padding": 0,
     "refreshInterval": 30
   },
   "subagentStatusLine": {
     "type": "command",
-    "command": "node \"~/.claude/hooks/ampline-claude/bin/ampline-claude.js\" --subagent"
+    "command": "node \"/absolute/path/to/.claude/hooks/ampline-claude/bin/ampline-claude.js\" --subagent"
   }
 }
 ```
 
-Use an absolute path, not `~` — `cmd.exe` doesn't expand it.
+The exact `command` value the installer writes for your machine is the fastest way to get this
+right — run the installer once, then copy `statusLine.command` straight out of the
+`settings.json` it produced.
 
 </details>
 
@@ -74,14 +78,19 @@ npx ampline-claude uninstall
 
 Removes the `statusLine`/`subagentStatusLine` entries from `settings.json` (backing up the
 file first), deletes `~/.claude/hooks/ampline-claude/`, and clears the cache. If your
-`settings.json` points at a different statusline, uninstall refuses to touch it.
+`settings.json` points at a different statusline, uninstall refuses to touch it — but note the
+install side is asymmetric: installing over an existing foreign `statusLine` prints a notice
+and then replaces it.
+
+Other flags: `npx ampline-claude --version` prints the installed version, `--help` prints
+usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare commands above.
 
 ## What it shows
 
 | Segment | Example | Notes |
 |---|---|---|
-| Directory | `ampline-claude` | repo name from the `origin` remote, falls back to the folder name |
-| Git | `⎇ main ↑2 ●` | branch, ahead/behind, dirty (`●`) or clean (`✓`) |
+| Directory | `ampline-claude` | repo name as Claude Code reports it, falls back to the folder name |
+| Git | `⎇ main ↑2 ●` | branch, ahead/behind, dirty (`●`) or clean (`✓`) — `✓` means no *tracked* changes; new untracked files alone still show clean, see below |
 | Model + effort | `Opus 5 · high` | the 16-step wheel — see below |
 | Context | `C34 ███░░░░░` | context-window usage, green→red |
 | 5-hour usage | `H93 ███████░ ↺ 4h28m` | rate-limit window, with reset countdown |
@@ -97,6 +106,11 @@ ampline-claude │ ⎇ main ✓ │ Opus 5 · high │ C34 ███░░░░
 ```
 
 Wraps to two lines automatically when it doesn't fit `COLUMNS`.
+
+**Git dirty is a deliberate narrower check.** For speed, the one `git status` call ampline-claude
+makes skips untracked files (`--untracked-files=no`). A repo whose only change is a handful of new,
+not-yet-`git add`ed files still shows `✓` — the marker tracks staged/modified/deleted files, not
+"is the working tree identical to HEAD." `git status` in your terminal remains the source of truth.
 
 ## The color wheel
 
@@ -166,10 +180,14 @@ tool degrades everywhere else. See `.amplinerc.json.example` in this repo for a 
 ## How it works
 
 Claude Code pipes a JSON payload to the statusline command's **stdin** on every render, and
-captures stdout — no TTY, so no `tput cols`; width comes from `COLUMNS`/`LINES` in the
-environment instead. The process has to exit fast: if a new render triggers while the script
-is still running, Claude Code cancels it, so the real failure mode isn't slowness, it's *no
-statusline at all*.
+captures stdout — no TTY, so no `tput cols`; width comes from `COLUMNS` in the environment
+instead (falling back to a sane default if it's ever unset). The process has to exit fast: if
+a new render triggers while the script is still running, Claude Code cancels it, so the real
+failure mode isn't slowness, it's *no statusline at all*.
+
+**Config directory.** `~/.claude` is the default location for settings, cache, and installed
+runtime, but `CLAUDE_CONFIG_DIR` is honored everywhere if you've redirected it — the installer,
+cache, and task segment all resolve through the same override.
 
 **Usage bars, cached.** `rate_limits` is absent from stdin until the first API response of a
 session. Rather than filling that gap with a network call — which would mean reading your
@@ -187,6 +205,7 @@ More detail:
 - [`DECISIONS.md`](DECISIONS.md) — every design decision and why, including where the live
   Claude Code payload disagreed with documentation
 - [`CHANGELOG.md`](CHANGELOG.md) — what shipped in each version
+- [`SECURITY.md`](SECURITY.md) — how to report a vulnerability
 
 ## FAQ
 
@@ -254,7 +273,12 @@ way, use `npx ampline-claude --install` in scripts to install unconditionally.
   Code runs on. This is a precondition of how Claude Code itself resolves the current
   branch's PR status, not something `ampline-claude` calls directly — without it, `pr`
   simply doesn't appear, the same as if there were no open PR.
+- **macOS and Linux are supported by design but not yet verified on real hardware.** Every
+  payload capture and install/uninstall test behind this project so far has run on Windows
+  (see `DECISIONS.md`). The code has no platform-specific branches and CI runs the full
+  fixture suite on all three OSes, but real-world confirmation on a Mac or Linux box —
+  glyph rendering, `nvm`-managed Node on a PATH-limited launch, etc. — is still outstanding.
 
 ---
 
-© 2026 Paymon Software · MIT
+© 2026 Carter Tull · MIT
