@@ -21,6 +21,33 @@ function makeTempHome() {
   return dir;
 }
 
+// Some scenarios (config-file loading, the todos-backed task segment) read
+// from the filesystem rather than stdin, so a few fixtures need companion
+// files seeded into the throwaway HOME.
+function seedFilesFor(name, home) {
+  if (name === 'separator-injection.json') {
+    const esc = String.fromCharCode(27);
+    const bel = String.fromCharCode(7);
+    const evilSeparator = esc + ']8;;http://evil.example' + bel + ' x ' + esc + ']8;;' + bel;
+    fs.writeFileSync(
+      path.join(home, '.amplinerc.json'),
+      JSON.stringify({ separator: evilSeparator }) + '\n',
+      'utf8'
+    );
+  }
+  if (name === 'emoji-task.json') {
+    const todosDir = path.join(home, '.claude', 'todos');
+    fs.mkdirSync(todosDir, { recursive: true });
+    const rocket = String.fromCodePoint(0x1f680); // outside the BMP -> a UTF-16 surrogate pair
+    const content = rocket.repeat(45);
+    fs.writeFileSync(
+      path.join(todosDir, 'fixture-emoji-task.json'),
+      JSON.stringify([{ status: 'in_progress', content }]),
+      'utf8'
+    );
+  }
+}
+
 // fixture -> assertions. `expect` is a substring required in stdout;
 // `refute` must not appear. Omit both to assert only "does not crash".
 const EXPECTATIONS = {
@@ -44,6 +71,10 @@ const EXPECTATIONS = {
   'subagent-tasks.json':       { refute: ['NaN', 'local_agent'] },
   'malformed.txt':             { refute: ['NaN'] },
   'empty.txt':                 { refute: ['NaN'], expectStderr: ['no input received', '--install'] },
+  'pr-null-number.json':       { refute: ['#0', 'NaN', 'undefined'] },
+  'resets-at-ms.json':         { expect: ['H'], refute: ['↺', 'NaN'] },
+  'separator-injection.json':  { refute: [String.fromCharCode(27) + ']8;;http://evil.example', 'NaN'] },
+  'emoji-task.json':           { refute: [String.fromCodePoint(0xfffd), 'NaN'] },
 };
 
 let failures = 0;
@@ -60,6 +91,7 @@ function runFixture(name) {
   const args = isSubagent ? [BIN, '--subagent'] : [BIN];
 
   const home = makeTempHome();
+  seedFilesFor(name, home);
   const res = spawnSync(process.execPath, args, {
     input,
     encoding: 'utf8',

@@ -1,11 +1,11 @@
 {
   "session_id": "fixture-full-session",
   "session_name": "full payload fixture",
-  "cwd": "C:\\current\\working\\directory",
+  "cwd": "/nonexistent/ampline-fixture-dir",
   "transcript_path": "C:\\path\\to\\transcript.jsonl",
   "model": { "id": "claude-opus-5", "display_name": "Opus 5" },
   "workspace": {
-    "current_dir": "C:\\current\\working\\directory",
+    "current_dir": "/nonexistent/ampline-fixture-dir",
     "project_dir": "C:\\original\\project\\directory",
     "added_dirs": [],
     "git_worktree": "feature-xyz",

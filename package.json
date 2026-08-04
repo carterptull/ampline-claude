@@ -1,9 +1,8 @@
 {
   "name": "ampline-claude",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A color-graded, zero-dependency statusline for Claude Code — a 16-step model/effort color wheel, context and rate-limit usage, git state, and session cost, all on one line.",
   "bin": { "ampline-claude": "./bin/ampline-claude.js" },
-  "main": "./bin/ampline-claude.js",
   "files": ["bin", "lib", ".amplinerc.json.example", "README.md", "LICENSE"],
   "engines": { "node": ">=18.0.0" },
   "keywords": ["claude-code", "statusline", "cli", "terminal", "anthropic", "zero-dependency"],
@@ -13,6 +12,9 @@
   "bugs": { "url": "https://github.com/carterptull/ampline-claude/issues" },
   "author": "Carter Tull (Paymon Software)",
   "scripts": {
-    "test": "node test/run.js"
+    "test": "node test/run.js",
+    "syntax-check": "node scripts/syntax-check.js",
+    "verify-pack": "node scripts/verify-pack.js",
+    "prepublishOnly": "npm run syntax-check && npm test && npm run verify-pack"
   }
 }

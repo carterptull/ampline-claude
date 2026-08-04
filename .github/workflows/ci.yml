@@ -5,6 +5,9 @@ on:
     branches: ['**']
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -24,7 +27,11 @@ jobs:
         run: node test/run.js
 
   pack:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,3 +39,16 @@ jobs:
           node-version: 22
       - name: Verify tarball contents
         run: node scripts/verify-pack.js
+      # Regression test: packs for real and runs the installed binary
+      # through its actual shebang/shim, the same path `npx ampline-claude`
+      # takes — catches what a file-list-only pack check can't.
+      - name: Install from the real tarball and run through the real shebang
+        shell: bash
+        run: |
+          set -e
+          npm pack
+          TARBALL=$(ls ampline-claude-*.tgz)
+          npm install -g "./$TARBALL"
+          OUT="$(ampline-claude --version)"
+          echo "version output: $OUT"
+          [ -n "$OUT" ]

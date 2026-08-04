@@ -96,4 +96,8 @@ function main() {
   process.stdin.on('error', finish);
 }
 
-main();
+// Guards against `require('ampline-claude')` running a real install as a
+// side effect of module load.
+if (require.main === module) main();
+
+module.exports = { main };

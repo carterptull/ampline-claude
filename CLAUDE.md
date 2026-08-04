@@ -24,6 +24,11 @@ lines of ANSI-colored text to stdout. Installed via `npx ampline-claude` into
 - **Every segment returns `null` instead of throwing.** stdout is the product surface; a
   blank statusline is acceptable, a crashed one is not. Every `render*Segment(ctx)` function
   wraps its body in `try/catch` and returns `null` on any failure.
+- **Foreign strings get sanitized before they reach stdout.** Branch names, todo text,
+  subagent labels, model names, and config values (`.amplinerc.json` `separator`, notably —
+  it loads automatically from a repo you didn't write) all pass through
+  `colors.js`'s `sanitize()` before interpolation. Terminal escape sequences are otherwise a
+  live injection vector, not a hypothetical one — see `DECISIONS.md`.
 - **`execFileSync` blocks the event loop.** No `setTimeout` can bound it. The only real
   defenses are: as few subprocess calls as possible (one `git status` call per render cycle,
   not two), a hard timeout on that one call, and caching so most renders hit zero
@@ -34,25 +39,38 @@ lines of ANSI-colored text to stdout. Installed via `npx ampline-claude` into
 ## Module layout
 
 ```
-bin/ampline-claude.js     Entry point. Three modes: installer (TTY or --install/uninstall),
-                           statusline (stdin piped, no flag), subagent (stdin piped, --subagent).
+bin/ampline-claude.js     Entry point. Six argv-driven paths: --help, --version, --install,
+                           uninstall/--uninstall, subagent (stdin piped, --subagent), and the
+                           default statusline path (TTY -> installer, piped stdin -> render).
+                           `if (require.main === module) main();` guards against a bare
+                           `require('ampline-claude')` triggering a real install as a side effect.
 lib/
-  colors.js                The wheel, the danger ramp, NO_COLOR, ANSI stripping. Frozen interface.
+  claudeDir.js              Resolves CLAUDE_CONFIG_DIR (falls back to ~/.claude). Every other
+                            module that touches the config directory goes through this — never
+                            hardcode os.homedir()/.claude again.
+  colors.js                The wheel, the danger ramp, NO_COLOR, ANSI stripping, control-char
+                            sanitization. Frozen interface.
   bar.js                   Block-bar renderer shared by context/fiveHour/weekly. BAR_WIDTH = 8.
   cache.js                 Two-tier fresh/stale file cache. Handles the Windows ':' filename bug
                             and atomic writes (two processes — main + subagent — can race).
   usage.js                 stdin rate_limits -> write-through cache -> resolveUsage(). Synchronous.
   config.js                .amplinerc.json loader: walk up from cwd, then home, first file wins.
-  layout.js                One-line vs two-line wrapping, reading COLUMNS.
+  layout.js                One-line vs two-line wrapping, reading COLUMNS (falls back to
+                            DEFAULT_COLUMNS when unset/non-numeric).
   render.js                Assembles segments per config into the final line(s). Entry point
                             for the main statusline; NOT used for the subagent line.
   install.js               settings.json merge + backup + runtime copy to ~/.claude/hooks/.
+                            Writes through a symlinked settings.json rather than replacing it,
+                            and preserves the original file's permission bits across the atomic
+                            rename.
   segments/
     model.js                Model name + effort, wheel color.
     context.js               Context-window usage bar.
     rateLimits.js             5-hour + weekly usage bars.
     git.js                     Branch (from .git/HEAD, no subprocess) + ahead/behind/dirty
-                               (one cached `git status --porcelain=v2` call).
+                               (one cached `git status --porcelain=v2` call, run with
+                               `-c core.fsmonitor=` and `--no-optional-locks` — a repo's own
+                               .git/config cannot run a hook command through this call).
     cost.js                     Session cost + lines added/removed.
     task.js                      Current in-progress todo, from ~/.claude/todos/.
     pr.js                          Open PR + review state. Requires `gh` CLI installed and
@@ -73,6 +91,9 @@ lib/colors.js    fg(r,g,b) · RESET · BOLD · DIM · EFFORT_ORDER · WHEEL
                  normalizeModelFamily(modelId, displayName) -> family | null
                  normalizeEffortLevel(level) -> level | null      <- null, never a default
                  colorsEnabled() -> boolean · stripAnsi(s) -> string
+                 sanitize(s) -> string   <- strips C0/C1 controls + U+2028/U+2029
+
+lib/claudeDir.js claudeDir() -> string   <- CLAUDE_CONFIG_DIR override or ~/.claude
 
 lib/bar.js       renderBar(label, usedPct, opts) -> string | null   opts: {stale}
                  BAR_WIDTH
@@ -128,6 +149,13 @@ non-zero exit from the statusline path, never a partial/garbled line. Specifical
   never fires during a real Claude Code render — real renders always pipe a payload — so it
   doesn't contradict stdout-is-the-product; it only helps a human or script that ran the bare
   command with no input to install. See DECISIONS.md D17.
+- **Known gap:** the "never a hang" guarantee is enforced by a real timeout only for the one
+  `execFileSync('git', ...)` call. The synchronous filesystem reads in `cache.js` and
+  `segments/task.js` (`readFileSync`/`readdirSync`/`statSync`) have no ceiling — on a
+  network-mounted `~/.claude`, a render could block for as long as that I/O takes. Fixing this
+  for real means moving those paths off synchronous I/O, which conflicts with `usage.js` and
+  `render.js` being deliberately `SYNCHRONOUS` (see Frozen module interfaces) — not addressed
+  yet, flagged here rather than silently assumed away.
 
 ## Cache TTLs
 
