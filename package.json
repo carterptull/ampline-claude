@@ -1,6 +1,6 @@
 {
   "name": "ampline-claude",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A color-graded, zero-dependency statusline for Claude Code — a 16-step model/effort color wheel, context and rate-limit usage, git state, and session cost, all on one line.",
   "bin": { "ampline-claude": "./bin/ampline-claude.js" },
   "files": ["bin", "lib", ".amplinerc.json.example", "README.md", "LICENSE"],
