@@ -72,6 +72,7 @@ const EXPECTATIONS = {
   'malformed.txt':             { refute: ['NaN'] },
   'empty.txt':                 { refute: ['NaN'], expectStderr: ['no input received', '--install'] },
   'pr-null-number.json':       { refute: ['#0', 'NaN', 'undefined'] },
+  'pr-gitlab-shape.json':      { expect: ['#42'], refute: ['NaN'] },
   'resets-at-ms.json':         { expect: ['H'], refute: ['↺', 'NaN'] },
   'separator-injection.json':  { refute: [String.fromCharCode(27) + ']8;;http://evil.example', 'NaN'] },
   'emoji-task.json':           { refute: [String.fromCodePoint(0xfffd), 'NaN'] },
