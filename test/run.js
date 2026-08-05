@@ -8,22 +8,19 @@ const ROOT = path.join(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'ampline-claude.js');
 const FIXTURES = path.join(__dirname, 'fixtures');
 
-// Each fixture gets its OWN throwaway HOME/USERPROFILE, not one shared
-// across the run. A contributor's real ~/.claude/cache/ampline would
-// otherwise leak into fixtures via a leftover cached usage entry — and even
-// a fresh shared dir isn't enough, since an earlier fixture with live
-// rate_limits legitimately write-throughs a cache entry that a later
-// fixture (e.g. no-rate-limits.json) would then correctly inherit. Per-
-// fixture isolation is what actually makes each scenario independent.
+// Each fixture gets its OWN throwaway HOME/USERPROFILE. A shared one isn't
+// enough: an earlier fixture with live rate_limits legitimately write-throughs
+// a cache entry that a later fixture (e.g. no-rate-limits.json) would then
+// inherit. Per-fixture isolation is what makes each scenario independent.
 function makeTempHome() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-home-'));
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
   return dir;
 }
 
-// Some scenarios (config-file loading, the todos-backed task segment) read
-// from the filesystem rather than stdin, so a few fixtures need companion
-// files seeded into the throwaway HOME.
+// Config-file loading and the todos-backed task segment read from the
+// filesystem rather than stdin, so a few fixtures need companion files
+// seeded into the throwaway HOME.
 function seedFilesFor(name, home) {
   if (name === 'separator-injection.json') {
     const esc = String.fromCharCode(27);
@@ -48,8 +45,8 @@ function seedFilesFor(name, home) {
   }
 }
 
-// fixture -> assertions. `expect` is a substring required in stdout;
-// `refute` must not appear. Omit both to assert only "does not crash".
+// fixture -> assertions: `expect` substrings must appear in stdout, `refute`
+// must not. Omit both to assert only "does not crash".
 const EXPECTATIONS = {
   'full.json':                 { expect: ['Opus', '#1234'], refute: ['NaN', 'undefined'], refuteStderr: ['no input received'] },
   'haiku-no-effort.json':      { refute: ['high', 'NaN'] },

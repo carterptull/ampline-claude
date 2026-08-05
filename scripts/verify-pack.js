@@ -1,7 +1,6 @@
 'use strict';
 // Confirms the actual `npm pack` tarball contents match the `files`
-// allowlist intent — catches a broken files field or an accidental
-// .npmignore before it ships, rather than trusting package.json alone.
+// allowlist — catches a broken files field or stray .npmignore before it ships.
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
