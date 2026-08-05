@@ -3,7 +3,7 @@
 ## Supported versions
 
 Only the latest published version on npm is supported. Please upgrade
-(`npx ampline-claude@latest`) before reporting an issue to confirm it isn't already fixed.
+(`npx ampline-claude@latest --install`) before reporting an issue to confirm it isn't already fixed.
 
 ## Why this matters for a statusline
 
