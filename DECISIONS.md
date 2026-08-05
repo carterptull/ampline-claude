@@ -528,3 +528,121 @@ no-color path, which is exactly the gap D11's rejected `~` prefix would have cov
 visual side-by-side review; reversing it unilaterally in a hardening pass isn't this session's
 call to make. Recorded here as a confirmed gap in the existing decision's own stated reasoning,
 for Carter to weigh directly rather than silently overridden or silently left inconsistent.
+
+### D33. Context percentage is per-completed-call, not a live counter
+
+Reported from a real session: Claude's own response text said 87% context used while the
+statusline showed `C78`. The obvious reading is that the statusline is stale and needs to
+refresh more often. That reading is wrong, and acting on it would have meant lowering
+`refreshInterval` for no benefit.
+
+Read against Claude Code 2.1.222, the payload field `context_window.current_usage` is
+documented in the CLI's own embedded schema as "token usage from last API call". The
+statusline itself displays `context_window.used_percentage`, a sibling field in the same
+block, not `current_usage` directly. The whole `context_window` block advances together
+once per completed API call, so the claim holds for `used_percentage` too. It does not
+track tokens continuously as a response streams. During one long single-call response there
+is no fresher number in existence for any statusline to display.
+
+The render path is not the bottleneck either. `tokenUsage` is a watched dependency on a
+debounced re-render of roughly 300ms, so a changed value reaches the statusline almost
+immediately. `refreshInterval` is documented in the same schema as re-running the status
+line command every N seconds "in addition to event-driven updates". It is a supplementary
+timer, not the primary mechanism.
+
+**Decision:** `refreshInterval: 30` in `lib/install.js` is correct and stays. Lowering it
+would re-invoke the hook more often with an unchanged value. The gap is documented in the
+README as a property of the field rather than presented as a limitation of this tool, and
+the README says explicitly that `refreshInterval` does not affect it, because that is the
+wrong fix a reader would otherwise try.
+
+Also rejected: exposing `refreshInterval` through `.amplinerc.json`. That file is read by
+ampline-claude at render time, while `refreshInterval` is read by Claude Code from
+`settings.json` at session start. A setting that looks live but silently needs a reinstall
+to take effect is worse than no setting.
+
+### D34. Ultracode cannot be distinguished from plain `xhigh`, so it is not displayed
+
+Enterprise accounts offer an "ultracode" mode, announced in the CLI banner as "xhigh effort
++ dynamic workflows for maximum thoroughness". It is available on Sonnet, Opus, and Fable.
+A plain `xhigh` session and an ultracode session behave very differently, so showing them
+identically hides something real.
+
+Read against Claude Code 2.1.222, the CLI's own schema documentation lists these top-level
+fields for the statusline payload object: `session_id`, `model`, `workspace`,
+`context_window`, `effort`, `thinking`, `rate_limits`, `vim`, `agent`, `pr`, and `worktree`.
+That is the field list the schema gives for that object, not the full set of fields the
+live payload carries — D7 records fields confirmed from real captures, including several
+not in this list. No ultracode key exists in either source. `effort.level` is one of `low`,
+`medium`, `high`, `xhigh`, or `max`, and an ultracode session reports literally `xhigh`.
+
+Claude Code does track a distinct internal ultracode boolean, and there is a documented
+field for it in the subagent and worker IPC protocol, described as whether ultracode is
+active for the session. That flag is normalized to `xhigh` before the statusline payload is
+built. The internal mapping table reads `{ ultracode: "xhigh" }`.
+
+**Decision:** not displayed, because it cannot be. This is not "unverified, capture a
+payload later". It is confirmed absent from the schema. Two designs were considered and
+both are moot: a 17th wheel color, and a plain text marker appended to the model segment.
+
+The wheel color was independently the wrong shape regardless of data availability. The
+wheel is deliberately two-dimensional, color for model and position for effort. Ultracode
+spans three model families, which makes it an orthogonal mode axis rather than a property
+of either dimension. Encoding it as a hue would put a third variable into a scale built for
+two and cost the glance-and-know property the wheel exists for.
+
+If this is ever wanted, it is a feature request against Claude Code to add an `ultracode`
+boolean to the statusline schema. It is not something ampline-claude can solve.
+
+The schema docstrings behind this entry are the durable evidence. The minified internals
+also inspected, the React effect driving re-renders and the normalization table, are
+implementation details that can change between releases without notice. Re-verify against
+the current build before relying on them.
+
+### D35. `rate_limits` is absent on enterprise and Teams accounts
+
+On a ConstructConnect enterprise account the `fiveHour` and `weekly` segments never
+appeared. On a personal Claude.ai Pro account they appear normally. Both machines were
+running Claude Code 2.1.222, so this is account entitlement and not a version difference.
+
+Claude Code sends `rate_limits` only for account types that actually have enforced 5-hour
+and weekly usage windows. Enterprise and Teams accounts do not, so the field is missing
+from the payload. `lib/segments/rateLimits.js` returns `null`, and `render.js` leaves the
+segments out.
+
+**Decision:** no code change. This is the degradation contract in `CLAUDE.md` working as
+designed, where a segment with insufficient data returns `null` and is omitted. It was
+documented in the README rather than fixed, because there is nothing to fix.
+
+The default `line2From` is `"fiveHour"`, and `lib/render.js` computes the line 2 split from
+a segment's position in the configured list rather than from whether it rendered. On an
+enterprise account the split point is therefore a segment that never renders. This does not
+misbehave: every segment between `fiveHour` and the next one that does render is also null,
+so the split lands in the same place a differently-chosen `line2From` would anyway. Nothing
+breaks either way, since `layout.js` handles an empty line 2 and the shortened line usually
+collapses back to one line. No README change or config recommendation follows from this,
+since the default already produces the right result.
+
+### D36. Real Linux verification, closing D18 and D27's open questions
+
+Every prior claim about macOS/Linux behavior (D18's CRLF shebang fix, D26's `COLUMNS`
+fallback, D27's absolute-node-path resolution) had been reasoned about but never run on
+real non-Windows hardware. Run on Ubuntu 22.04 via WSL, Node 20.18.1 installed as a plain
+user-space tarball rather than through a system package or PATH-managed shim, to match the
+non-standard-PATH condition D27 was actually written for.
+
+Confirmed directly, not inferred: the full fixture suite and `syntax-check` pass unchanged;
+`bin/ampline-claude.js` executes directly via its shebang with no CRLF problem; the
+installed copy's `--version` reports a real number; UTF-8 glyphs (box-drawing, blocks, dots)
+survive intact with no replacement characters; `NO_COLOR` strips all ANSI output and the
+default and `COLORTERM=truecolor` paths both produce it. `--install`, a second `--install`
+(confirming the settings backup fires and is not duplicated), and `uninstall` were run
+end to end against a scratch config directory: `resolveNodeCommand()` correctly wrote the
+absolute path to the Node actually running the installer, not a bare `node`, exactly D27's
+intended behavior, on a Node binary that was not on the system's default PATH.
+
+**Decision:** the README's macOS/Linux caveat is corrected to reflect Linux as verified.
+macOS remains unverified, since nothing here ran on macOS hardware. Also unverified: what
+`COLUMNS` and other environment variables a real Claude Code process supplies when it
+invokes the hook on Linux (D26 remains open on that specific point) — this pass verified
+the binary's own behavior under controlled invocation, not a live Claude Code session.
