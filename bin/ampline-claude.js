@@ -30,8 +30,8 @@ function printHelp() {
   console.log(`ampline-claude — a zero-dependency statusline for Claude Code
 
 Usage:
-  npx ampline-claude              Install into ~/.claude/settings.json
-  npx ampline-claude --install    Same, explicitly
+  npx ampline-claude --install    Install into ~/.claude/settings.json
+  npx ampline-claude              Same, but only from an interactive terminal
   npx ampline-claude uninstall    Remove settings entries, runtime, and cache
   npx ampline-claude --version    Print version
   npx ampline-claude --help       This message

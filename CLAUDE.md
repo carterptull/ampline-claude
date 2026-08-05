@@ -7,7 +7,7 @@ payload disagreed with the original spec.
 ## What this is
 
 A zero-dependency Claude Code statusline. Reads a JSON payload on stdin, prints one or two
-lines of ANSI-colored text to stdout. Installed via `npx ampline-claude` into
+lines of ANSI-colored text to stdout. Installed via `npx ampline-claude --install` into
 `~/.claude/settings.json`.
 
 ## Rules that apply everywhere, not just where first introduced

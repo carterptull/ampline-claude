@@ -27,11 +27,14 @@ running and how hard, in color, at a glance, on one line.
 ## Quickstart
 
 ```sh
-npx ampline-claude
+npx ampline-claude --install
 ```
 
 That's it. It installs itself into `~/.claude/settings.json` and copies its runtime to
 `~/.claude/hooks/ampline-claude/`. Restart Claude Code or start a new session to see it.
+
+The bare `npx ampline-claude` also installs, but only from an interactive terminal. Use
+`--install` in scripts, in CI, or any time you are not sure. It works everywhere.
 
 <details>
 <summary>Manual install (editing settings.json yourself)</summary>
@@ -65,7 +68,7 @@ right. Run the installer once, then copy `statusLine.command` straight out of th
 ## Update
 
 ```sh
-npx ampline-claude@latest
+npx ampline-claude@latest --install
 ```
 
 Re-runs the installer, which replaces the installed copy in place.
@@ -92,9 +95,9 @@ usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare
 | Directory | `ampline-claude` | repo name as Claude Code reports it, falls back to the folder name |
 | Git | `⎇ main ↑2 ●` | branch, ahead/behind, dirty (`●`) or clean (`✓`). `✓` means no *tracked* changes, see below |
 | Model + effort | `Opus 5 · high` | the 16-step wheel, see below |
-| Context | `C34 ███░░░░░` | context-window usage, green→red |
-| 5-hour usage | `H93 ███████░ ↺ 4h28m` | rate-limit window, with reset countdown |
-| Weekly usage | `W17 █░░░░░░░ ↺ 2d23h` | same shape, 7-day window |
+| Context | `C34 ███░░░░░` | context-window usage, green→red. Reflects the last completed API call, see below |
+| 5-hour usage | `H93 ███████░ ↺ 4h28m` | rate-limit window, with reset countdown. Subscription accounts only, see below |
+| Weekly usage | `W17 █░░░░░░░ ↺ 2d23h` | same shape, 7-day window. Subscription accounts only, see below |
 | Cost | `$12.47 +2412/-1` | session cost estimate + lines changed |
 | Task | `Writing the render module…` | current in-progress todo, dimmed |
 | PR | `#1` | open PR for the current branch, colored by review state |
@@ -106,6 +109,10 @@ ampline-claude │ ⎇ main ✓ │ Opus 5 · high │ C34 ███░░░░
 ```
 
 Wraps to two lines automatically when it doesn't fit `COLUMNS`.
+
+That example is from a Claude.ai subscription account. On an enterprise or Teams account the
+`H` and `W` segments are absent, because Claude Code does not send rate-limit data for
+those account types. Everything else renders the same.
 
 **Git dirty is a deliberate narrower check.** For speed, the one `git status` call ampline-claude
 makes skips untracked files (`--untracked-files=no`). A repo whose only change is a handful of
@@ -269,15 +276,29 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
   as "spending a lot," which is intentional, but the exact hue boundary between them is close.
 - **Usage bars need one API response before they first appear** on a brand-new install. The
   write-through cache has nothing to show until then.
-- **The PR segment requires the `gh` CLI installed and authenticated** on the machine Claude
-  Code runs on. This is a precondition of how Claude Code itself resolves the current
-  branch's PR status, not something `ampline-claude` calls directly. Without it, `pr` simply
-  doesn't appear, the same as if there were no open PR.
-- **macOS and Linux are supported by design but not yet verified on real hardware.** Every
-  payload capture and install/uninstall test behind this project so far has run on Windows
-  (see `DECISIONS.md`). The code has no platform-specific branches, and CI runs the full
-  fixture suite on all three OSes, but real-world confirmation on a Mac or Linux box (glyph
-  rendering, `nvm`-managed Node on a PATH-limited launch, and so on) is still outstanding.
+- **The 5-hour and weekly bars need a Claude.ai subscription account.** Claude Code only
+  sends rate-limit window data for accounts that have those windows. Enterprise and Teams
+  accounts do not, so `fiveHour` and `weekly` never appear on them. The rest of the
+  statusline renders normally. This is the intended behavior, not a failure.
+- **The context percentage reflects the last completed API call.** It is not a live token
+  counter. During a long single response the number stays at its pre-call value, then jumps
+  once that call finishes. Claude Code re-renders the statusline within about 300ms of the
+  value changing, so this is not a refresh problem, and changing `refreshInterval` does not
+  affect it. There is no fix available from the statusline side.
+- **The PR segment renders whatever Claude Code hands it, and nothing more.** Claude Code
+  resolves the current branch's PR itself and puts the result in the payload. It needs the
+  `gh` CLI installed and authenticated on the machine it runs on to do that.
+  `ampline-claude` never runs `gh`, or any other command, to look a PR up. If Claude Code
+  sends no PR, the segment is left out, the same as if there were no open PR. This also
+  means support for hosts other than GitHub is Claude Code's to add, not something
+  `ampline-claude` can provide on its own.
+- **Linux is verified on real hardware. macOS is not yet.** The fixture suite, the install
+  and uninstall flow, the shebang, UTF-8 glyph output, and color behavior have all been
+  confirmed on a real Linux box, including the absolute-Node-path resolution a
+  version-managed Node needs (see `DECISIONS.md` D36). What a real Claude Code process
+  itself supplies as environment variables on Linux is still unconfirmed, since this was a
+  controlled invocation rather than a live session. macOS has had none of this run against
+  it yet.
 
 ---
 

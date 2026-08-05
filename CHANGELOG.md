@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-05
+
+### Fixed
+- Quickstart and Update now recommend `npx ampline-claude --install`, and `SECURITY.md` and
+  `CLAUDE.md` were corrected to match. The bare form only installs from an interactive
+  terminal, so the previous instruction silently did nothing in scripts, in CI, and in some
+  enterprise terminals. The behavior itself is unchanged and intentional, see `DECISIONS.md`
+  D17.
+- `--help` listed the bare command first as the primary way to install. It now leads with
+  `--install`, matching the README.
+- Corrected the explanation of the context percentage. It reflects the last completed API
+  call rather than a live token count, so it is not a refresh problem and `refreshInterval`
+  does not affect it. See `DECISIONS.md` D33.
+- The installer's refuse-to-reinstall-from-itself error suggested `npx ampline-claude@latest`
+  with no flag. It now suggests `--install`, matching every other reference to the command.
+- `--version` run against an installed copy always printed `unknown`, on every version ever
+  published, because the installer copied `bin/` and `lib/` but never `package.json`, and
+  `--version` reads its own version from that file. The installer now copies it too.
+
+### Added
+- Documented that the 5-hour and weekly bars need a Claude.ai subscription account.
+  Enterprise and Teams accounts get no rate-limit data in the payload, so those two
+  segments never appear on them. See `DECISIONS.md` D35.
+- Documented that ultracode cannot be told apart from plain `xhigh`, because Claude Code
+  normalizes it away before the statusline payload is built. See `DECISIONS.md` D34.
+- Clarified that the PR segment renders what Claude Code resolves, and never runs `gh`
+  itself.
+- Verified the full test suite, the install and uninstall flow, and the color/UTF-8 output
+  on real Linux. The README's Known limitations now say Linux is confirmed and macOS is not,
+  instead of listing both as unverified. See `DECISIONS.md` D36.
+- Added `test/fixtures/pr-gitlab-shape.json`, confirming the PR segment renders a
+  GitLab-shaped merge request identically to a GitHub pull request, since it only ever reads
+  a number and a review state.
+
 ## [0.4.0] - 2026-08-04
 
 ### Changed
