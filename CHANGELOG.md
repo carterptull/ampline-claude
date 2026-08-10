@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-09
+
+### Changed
+- **Breaking:** minimum supported Node version raised from 18 to 24 (`engines.node` is now
+  `>=24.0.0`). Node 18 and 20 are EOL/deprecated; the CI matrix now tests Node 24 only
+  instead of 18/20/22, and `actions/checkout`/`actions/setup-node` were bumped from `@v4` to
+  `@v7` in `.github/workflows/ci.yml`, since v4 ran on GitHub's deprecated `node20` Actions
+  runtime.
+
 ## [0.4.1] - 2026-08-05
 
 ### Fixed
