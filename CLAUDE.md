@@ -15,8 +15,8 @@ lines of ANSI-colored text to stdout. Installed via `npx ampline-claude --instal
 - **Never add a runtime dependency.** `package.json` has no `dependencies` field. Keeping it
   that way is the point — instant `npx`, zero supply-chain surface.
 - **Never add a network call or read a credential.** No exceptions. Usage data comes only
-  from stdin `rate_limits`, cached to disk. See `lib/usage.js` and `DECISIONS.md`'s "no
-  network" entry for why an OAuth fallback was rejected.
+  from stdin `rate_limits`, cached to disk. See `lib/usage.js` and the README FAQ
+  ("Does it read my credentials?") for why an OAuth fallback was rejected.
 - **Color = identity, bold = urgency.** The 20-step model/effort wheel (`lib/colors.js`)
   carries no urgency signal — only `max` bolds, because it's inherently "pay attention."
   Usage bars (`lib/bar.js`) are the opposite: a separate green→red danger ramp, bold reserved
@@ -168,6 +168,16 @@ non-zero exit from the statusline path, never a partial/garbled line. Specifical
 | Usage | `usage` | n/a (write-through) | 24h + resets_at rollover check | stdin is authoritative when present; cache only covers cold start |
 | Git state | `git:<gitdir>` | 5s | 60s | one subprocess call; 5s is below human perception for branch/dirty changes |
 | Current task | `task:<session_id>` | 3s | 15s | filesystem I/O; todos don't change faster than this |
+
+## Diagrams
+
+`diagrams/` holds hand-maintained Mermaid architecture diagrams (start at
+`diagrams/overview.md`). When a change alters something one of them shows (the render path,
+the color wheel, the PR/MR segment, the cache tiers, the installer, CI or the security
+controls), update that diagram and its footer stamp in the same PR. Bump every footer's
+version on each release. The re-check table and the GitHub Mermaid syntax rules are in
+`diagrams/README.md`. `diagrams/` is not in the npm `files` allowlist, so it never ships in
+the tarball.
 
 ## Testing
 

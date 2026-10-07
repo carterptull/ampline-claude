@@ -219,6 +219,8 @@ If data's missing, that one segment just gets skipped and the rest of the line s
 
 More detail:
 - [`CLAUDE.md`](CLAUDE.md): module architecture, frozen interfaces, the rules that apply everywhere
+- [`diagrams/`](diagrams/README.md): architecture diagrams, starting with
+  [`overview.md`](diagrams/overview.md)
 - [`DECISIONS.md`](DECISIONS.md): every design decision and why, including where the live
   Claude Code payload disagreed with documentation
 - [`CHANGELOG.md`](CHANGELOG.md): what shipped in each version
