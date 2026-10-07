@@ -199,6 +199,10 @@ dependency of `ampline-claude` itself (the tool never calls `gh`; Claude Code do
 populate the payload) — the note is purely so a user without `gh` installed understands why the
 PR segment never appears rather than assuming a bug.
 
+**Update (v0.6.0):** this precondition is narrower than first recorded. Claude Code also accepts
+`GH_TOKEN` / `GITHUB_TOKEN` for GitHub, and since v2.1.234 fills `pr` for GitLab merge requests
+through `glab`. See D38.
+
 ### D13. `copyRuntime` rolls back on a failed swap
 
 **Deviation from the plan.** §14's `copyRuntime` retires the existing install (`rename` to
@@ -646,3 +650,80 @@ macOS remains unverified, since nothing here ran on macOS hardware. Also unverif
 `COLUMNS` and other environment variables a real Claude Code process supplies when it
 invokes the hook on Linux (D26 remains open on that specific point) — this pass verified
 the binary's own behavior under controlled invocation, not a live Claude Code session.
+
+## Phase 3 — v0.6.0: Haiku 5.5 effort and GitLab merge requests
+
+### D37. Haiku 5.5 gets a five-stop blue ramp; no-effort Haiku keeps its flat blue
+
+Haiku 4.5 sent no `effort` field, so Haiku was the one flat color on the wheel (`#7DB8E8`) and
+`normalizeEffortLevel` returning `null` for it was the whole story. Haiku 5.5 supports all five
+effort levels (`low` to `max`, default `medium`), and Claude Code's statusline docs say
+`effort.level` is present exactly when the model supports the effort parameter. So a Haiku 5.5
+session now prints `Haiku 5.5 · medium`, and one flat color would have been the only model
+family where the effort word has no color cue.
+
+**Decision:** Haiku gets its own gradient: `#3D64E8`, `#4D79E8`, `#5D8EE8`, `#6DA3E8`, then
+`#7DB8E8` (the old flat blue) at `max`. The wheel is 20 steps. Haiku **without** effort data
+(Haiku 4.5, `effort: null`, a numeric budget, an unknown string) still returns `#7DB8E8`
+exactly. Every other family keeps falling back to `high` for missing effort; Haiku does not,
+because "Haiku with no effort" must look like it always has rather than jump to a mid-blue.
+This also keeps subagent rows, which are colored by family only and rarely carry effort,
+unchanged.
+
+**How the stops were chosen (measured, not eyeballed).** CIE76 ΔE between adjacent stops is
+15 to 16, above the tightest existing wheel step (Opus high to xhigh, 10.5). Contrast of the
+darkest stop on a `#1E1E1E` terminal is 3.3, the same as Opus max and better than Fable max
+(2.1), so no stop is dimmer than something already on the wheel.
+
+**Rejected:**
+- *A light-blue-to-cyan ramp inside the old gap* (`#7DB8E8` toward Sonnet low `#5CE8D0`): five
+  stops fit at only ΔE 5 to 7 apart, which reads as "Haiku, slightly shifting" and cannot be
+  told apart at a glance.
+- *A deeper navy start* (`#2846C8`): contrast 2.2 on a dark background, equal to the dimmest
+  thing on the wheel, for ΔE spacing the chosen ramp already clears.
+- *Leaving Haiku flat.* Viable, but then Haiku is the one family whose effort word has no color.
+
+The ramp is a hue-and-lightness path through blue, so the wheel's overall sweep (blue, cyan,
+green, yellow, orange, red, pink, violet, purple) is unchanged. `max` stays the only bold level.
+
+### D38. GitLab merge requests render as `!N`; the number is a validated hyperlink
+
+Claude Code v2.1.234 added GitLab merge request support: with a GitLab remote and `glab`
+authenticated, `pr.number` / `pr.url` / `pr.review_state` describe the merge request and
+`pr.kind` is `"mr"` (absent for GitHub). This is the capability the feature request in the
+v0.5.0 notes asked for. `pr.js` was already host-agnostic, so MRs rendered as `#N`.
+
+**Decision, label:** `pr.kind === 'mr'` (exact match only) renders `!N`, GitLab's own reference
+syntax and the one Claude Code's footer badge uses. Anything else renders `#N`. The `kind`
+string is never interpolated, so a hostile value cannot reach stdout. `kind` arrived in the
+same Claude Code version as MR support, so absent reliably means GitHub; the URL is never
+inspected to guess the host.
+
+**Decision, link:** the label is wrapped in an OSC 8 hyperlink so it is clickable in terminals
+that support it, matching the badge Claude Code shows in its own footer. `pr.url` is a foreign
+string that ends up inside an escape sequence, which is exactly the shape of injection D-notes
+elsewhere guard against, so the link is conditional on `safeLinkUrl()`: a string of at most
+2048 characters, entirely printable ASCII (no ESC, BEL, newline, space, DEL, or non-ASCII),
+that parses as a URL with scheme `https:` and no username or password. The parsed `href` is
+emitted, not the raw string, and re-checked against the same character class. Failing any
+check drops the link and keeps the colored number. The sequence is BEL-terminated, the form
+Claude Code's own statusline docs use, and `stripAnsi` already removes it for width math, so
+wrapping is unaffected. `NO_COLOR` means plain text, so no link is emitted there either, and
+`"color": false` strips it through the existing `stripAnsi` pass.
+
+**Rejected:** a host allowlist (self-managed GitLab and GitHub Enterprise hosts are arbitrary);
+inferring `kind` from the URL; skipping the link because Claude Code's footer already has a
+clickable badge (the statusline link is wanted, and the validation makes it safe).
+
+**Also fixed here:** `REVIEW_COLORS[pr.review_state]` used a foreign string as a bare object
+key, so `review_state: "constructor"` resolved to `Object.prototype.constructor` and printed
+function source into the statusline. It is now an own-property lookup (`Object.hasOwn`),
+covered by tests for `constructor`, `toString`, `__proto__`, and `hasOwnProperty`.
+
+**What is verified and what is not (2026-10-07).** The payload shape comes from Claude Code's
+published statusline and interactive-mode docs, not from a live GitLab capture. The fixture
+suite and a 23-case replay of GitHub, GitLab, and hostile payloads through the real binary pass.
+Confirming that a live Claude Code session actually sends `pr.kind: "mr"` for a GitLab branch
+needs `glab` authenticated on a machine with a GitLab remote, and has not been done yet.
+GitHub's `gh`-based path is the one verified live (D12). D12's "`gh` required" is also now
+slightly narrower than the truth: Claude Code also accepts `GH_TOKEN` / `GITHUB_TOKEN`.

@@ -17,7 +17,7 @@ lines of ANSI-colored text to stdout. Installed via `npx ampline-claude --instal
 - **Never add a network call or read a credential.** No exceptions. Usage data comes only
   from stdin `rate_limits`, cached to disk. See `lib/usage.js` and `DECISIONS.md`'s "no
   network" entry for why an OAuth fallback was rejected.
-- **Color = identity, bold = urgency.** The 16-step model/effort wheel (`lib/colors.js`)
+- **Color = identity, bold = urgency.** The 20-step model/effort wheel (`lib/colors.js`)
   carries no urgency signal — only `max` bolds, because it's inherently "pay attention."
   Usage bars (`lib/bar.js`) are the opposite: a separate green→red danger ramp, bold reserved
   for the 85%+ threshold. Don't blend the two scales.
@@ -73,9 +73,12 @@ lib/
                                .git/config cannot run a hook command through this call).
     cost.js                     Session cost + lines added/removed.
     task.js                      Current in-progress todo, from ~/.claude/todos/.
-    pr.js                          Open PR + review state. Requires `gh` CLI installed and
-                                   authenticated on the machine Claude Code runs in — that's
-                                   Claude Code's dependency, not ours; see DECISIONS.md D12.
+    pr.js                          Open PR (`#N`) or GitLab MR (`!N`, when `pr.kind === 'mr'`) +
+                                   review state. Claude Code fills `pr` (via `gh` or `glab`
+                                   on the machine it runs on) — that's its dependency, not
+                                   ours; see DECISIONS.md D12 and D38. The number becomes an
+                                   OSC 8 link only when `pr.url` passes `safeLinkUrl` (https,
+                                   printable ASCII, <=2048 chars, no credentials).
     subagents.js                   subagentStatusLine renderer. Different payload shape
                                    entirely — see "The subagent payload" below.
 ```
@@ -114,6 +117,7 @@ lib/render.js    renderStatusline(input) -> string                  <- SYNCHRONO
 lib/install.js   runInstaller(options) -> void · INSTALL_DIR
 
 segments         render<Name>Segment(ctx) -> string | null
+                 segments/pr.js also exports safeLinkUrl(raw) -> href | null
                  ctx = { input, config, usage }                     <- ONE object argument
 ```
 
