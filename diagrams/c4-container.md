@@ -13,16 +13,16 @@ source, not inferred from the layout in [`../CLAUDE.md`](../CLAUDE.md).
 
 ```mermaid
 flowchart TB
-    bin["<b>bin/ampline-claude.js</b><br/><small>entry point, argv routing, stdin, stdout</small>"]
-    install["lib/install.js<br/><small>settings.json merge, runtime copy</small>"]
-    render["<b>lib/render.js</b><br/><small>assembles the line from segments</small>"]
-    segs["lib/segments/*<br/><small>8 modules, next diagram</small>"]
-    config["lib/config.js<br/><small>.amplinerc.json loader</small>"]
-    layout["lib/layout.js<br/><small>one line or two</small>"]
-    usage["lib/usage.js<br/><small>rate limits, stdin then cache</small>"]
-    cache["lib/cache.js<br/><small>file cache, atomic writes</small>"]
-    claudedir["lib/claudeDir.js<br/><small>CLAUDE_CONFIG_DIR or ~/.claude</small>"]
-    colors["lib/colors.js<br/><small>wheel, danger ramp, sanitize,<br/>stripAnsi, NO_COLOR</small>"]
+    bin["<b>bin/ampline-claude.js</b><br/>entry point, argv routing, stdin, stdout"]
+    install["lib/install.js<br/>settings.json merge, runtime copy"]
+    render["<b>lib/render.js</b><br/>assembles the line from segments"]
+    segs["lib/segments/*<br/>8 modules, next diagram"]
+    config["lib/config.js<br/>.amplinerc.json loader"]
+    layout["lib/layout.js<br/>one line or two"]
+    usage["lib/usage.js<br/>rate limits, stdin then cache"]
+    cache["lib/cache.js<br/>file cache, atomic writes"]
+    claudedir["lib/claudeDir.js<br/>CLAUDE_CONFIG_DIR or ~/.claude"]
+    colors["lib/colors.js<br/>wheel, danger ramp, sanitize,<br/>stripAnsi, NO_COLOR"]
 
     bin --> render
     bin -.->|"required inside main()"| install
@@ -51,16 +51,16 @@ flowchart LR
         direction TB
         model["model.js"]
         context["context.js"]
-        rate["rateLimits.js<br/><small>fiveHour and weekly</small>"]
+        rate["rateLimits.js<br/>fiveHour and weekly"]
         gitseg["git.js"]
         cost["cost.js"]
         task["task.js"]
         pr["pr.js"]
-        sub["subagents.js<br/><small>not called by render.js</small>"]
+        sub["subagents.js<br/>not called by render.js"]
     end
 
     bar["lib/bar.js"]
-    usage["lib/usage.js<br/><small>formatCountdown only</small>"]
+    usage["lib/usage.js<br/>formatCountdown only"]
     cache["lib/cache.js"]
     claudedir["lib/claudeDir.js"]
     colors["lib/colors.js"]

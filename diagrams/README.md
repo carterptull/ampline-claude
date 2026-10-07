@@ -51,7 +51,9 @@ A routine fix or copy change doesn't need a diagram update.
   plain text: no `\n`, no colons.
 - Keep node ids simple alphanumerics, and quote any label containing parentheses, slashes,
   colons, or other special characters.
-- Avoid HTML other than `<br/>`, `<small>`, and `<b>`.
+- Avoid HTML other than `<br/>` and `<b>`. Do not use `<small>`: GitHub's renderer sizes the
+  node for the normal font, so the tail of small text gets clipped (seen on github.com, and in
+  the portfolio and blitzcast diagrams too).
 - Keep each diagram to roughly 6 to 14 nodes. Split rather than grow one giant diagram.
 - Verify by viewing the rendered file on github.com. Reading the source is not verification.
 

@@ -65,12 +65,12 @@ shape and none of the config or layout code is involved.
 
 ```mermaid
 flowchart TB
-    start["bin/ampline-claude.js --subagent<br/><small>same stdin read, same 500ms timeout</small>"]
-    parse["JSON.parse of stdin<br/><small>{ columns, tasks[] }</small>"]
+    start["bin/ampline-claude.js --subagent<br/>same stdin read, same 500ms timeout"]
+    parse["JSON.parse of stdin<br/>{ columns, tasks[] }"]
     check{"tasks is a<br/>non-empty array?"}
     empty["empty string"]
-    width["width = input.columns<br/><small>COLUMNS is unset here, so it is never read</small>"]
-    row["renderTaskRow per task<br/><small>try/catch per row, a bad row is dropped</small>"]
+    width["width = input.columns<br/>COLUMNS is unset here, so it is never read"]
+    row["renderTaskRow per task<br/>try/catch per row, a bad row is dropped"]
     join["rows joined with newlines"]
     out["stdout, then exit 0"]
 

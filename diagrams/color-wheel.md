@@ -7,14 +7,14 @@ string, so every path below produces no escape at all.
 
 ```mermaid
 flowchart TB
-    in["colorForModelEffort<br/><small>modelId, displayName, level</small>"]
-    fam{"normalizeModelFamily<br/><small>lowercase id and name, substring match</small>"}
-    unknown["grey #A0A0A0<br/><small>not a guess, an explicit unknown</small>"]
-    eff["normalizeEffortLevel<br/><small>low, medium, high, xhigh, max, else null</small>"]
+    in["colorForModelEffort<br/>modelId, displayName, level"]
+    fam{"normalizeModelFamily<br/>lowercase id and name, substring match"}
+    unknown["grey #A0A0A0<br/>not a guess, an explicit unknown"]
+    eff["normalizeEffortLevel<br/>low, medium, high, xhigh, max, else null"]
     hk{"family is haiku<br/>and level is null?"}
     flat["flat blue #7DB8E8"]
     pick["lvl, or high when level is null"]
-    res["resolveGradientColor<br/><small>exact stop, else step down to the nearest lower level</small>"]
+    res["resolveGradientColor<br/>exact stop, else step down to the nearest lower level"]
     out["fg(r, g, b)"]
 
     in --> fam
@@ -60,20 +60,20 @@ render time.
 ```mermaid
 flowchart LR
     subgraph identity["Identity, lib/colors.js wheel"]
-        w["model and effort<br/><small>20 fixed stops</small>"]
+        w["model and effort<br/>20 fixed stops"]
         b1["bold only at effort max"]
     end
 
     subgraph urgency["Urgency, lib/colors.js dangerStyle"]
-        d1["under 50<br/><small>green #60C878</small>"]
-        d2["50 to under 70<br/><small>yellow #F5C43D</small>"]
-        d3["70 to under 85<br/><small>amber #EF9F27</small>"]
-        d4["85 to under 95<br/><small>red #E8433D, bold</small>"]
-        d5["95 and over<br/><small>dark red #A32D2D, bold, warning glyph</small>"]
+        d1["under 50<br/>green #60C878"]
+        d2["50 to under 70<br/>yellow #F5C43D"]
+        d3["70 to under 85<br/>amber #EF9F27"]
+        d4["85 to under 95<br/>red #E8433D, bold"]
+        d5["95 and over<br/>dark red #A32D2D, bold, warning glyph"]
     end
 
-    bar["lib/bar.js renderBar<br/><small>context, fiveHour, weekly</small>"]
-    stale["stale cache value<br/><small>dim only, no danger style</small>"]
+    bar["lib/bar.js renderBar<br/>context, fiveHour, weekly"]
+    stale["stale cache value<br/>dim only, no danger style"]
 
     d1 --> d2 --> d3 --> d4 --> d5
     d5 --> bar

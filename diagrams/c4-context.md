@@ -10,18 +10,18 @@ stdin from Claude Code or is read from the local disk.
 
 ```mermaid
 flowchart LR
-    user(["👤 User<br/><small>runs Claude Code in a terminal,<br/>installs the statusline once</small>"])
+    user(["👤 User<br/>runs Claude Code in a terminal,<br/>installs the statusline once"])
 
-    cc["🖥️ Claude Code<br/><small>starts the command on every refresh,<br/>supplies the JSON payload,<br/>displays what comes back</small>"]
+    cc["🖥️ Claude Code<br/>starts the command on every refresh,<br/>supplies the JSON payload,<br/>displays what comes back"]
 
     subgraph boundary[" "]
-        amp["<b>ampline-claude</b><br/><small>zero-dependency Node program.<br/>JSON on stdin, 1 to 2 lines of ANSI text on stdout</small>"]
+        amp["<b>ampline-claude</b><br/>zero-dependency Node program.<br/>JSON on stdin, 1 to 2 lines of ANSI text on stdout"]
     end
 
-    fs[("💾 Local filesystem<br/><small>~/.claude/settings.json, hooks/, cache/, todos/<br/>.amplinerc.json, .git/HEAD</small>")]
-    git[["git<br/><small>local binary, one<br/>git status call, 400ms timeout</small>"]]
-    npm[["📦 npm registry<br/><small>serves the package to npx</small>"]]
-    gh[["GitHub<br/><small>source repo, CI, private<br/>vulnerability reporting</small>"]]
+    fs[("💾 Local filesystem<br/>~/.claude/settings.json, hooks/, cache/, todos/<br/>.amplinerc.json, .git/HEAD")]
+    git[["git<br/>local binary, one<br/>git status call, 400ms timeout"]]
+    npm[["📦 npm registry<br/>serves the package to npx"]]
+    gh[["GitHub<br/>source repo, CI, private<br/>vulnerability reporting"]]
 
     user -->|"runs Claude Code"| cc
     user -->|"npx ampline-claude --install"| npm

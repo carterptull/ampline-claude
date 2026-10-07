@@ -15,17 +15,17 @@ flowchart TB
 
     subgraph ci["CI: .github/workflows/ci.yml · permissions: contents read"]
         direction LR
-        test["<b>test</b> job<br/><small>ubuntu, macos, windows · Node 24<br/>syntax-check, then fixture tests</small>"]
-        pack["<b>pack</b> job<br/><small>ubuntu, macos, windows<br/>verify-pack, npm pack,<br/>global install, --version</small>"]
+        test["<b>test</b> job<br/>ubuntu, macos, windows · Node 24<br/>syntax-check, then fixture tests"]
+        pack["<b>pack</b> job<br/>ubuntu, macos, windows<br/>verify-pack, npm pack,<br/>global install, --version"]
     end
 
-    ci --> gate{"Branch protection on main<br/><small>PR required,<br/>test and pack green on all 3 OSes</small>"}
+    ci --> gate{"Branch protection on main<br/>PR required,<br/>test and pack green on all 3 OSes"}
     gate -->|"blocked"| dev
     gate -->|"merged"| main["main"]
 
-    main --> maint["Maintainer machine<br/><small>npm publish</small>"]
-    maint --> pre["prepublishOnly<br/><small>syntax-check, test, verify-pack</small>"]
-    pre --> tar["Tarball<br/><small>package.json files allowlist:<br/>bin, lib, .amplinerc.json.example,<br/>README.md, LICENSE</small>"]
+    main --> maint["Maintainer machine<br/>npm publish"]
+    maint --> pre["prepublishOnly<br/>syntax-check, test, verify-pack"]
+    pre --> tar["Tarball<br/>package.json files allowlist:<br/>bin, lib, .amplinerc.json.example,<br/>README.md, LICENSE"]
     tar --> npm[("📦 npm registry")]
     npm -->|"npx ampline-claude --install"| user(["User machine"])
 
@@ -63,21 +63,21 @@ compromised action would have no token to misuse beyond reading the repo.
 flowchart LR
     subgraph foreign["Untrusted input"]
         direction TB
-        payload["stdin payload<br/><small>model name, repo name, pr.url,<br/>pr.review_state, subagent labels</small>"]
-        repo["Repo content<br/><small>.git/HEAD branch name, .git/config,<br/>.amplinerc.json found by walking up</small>"]
-        todos["Todo files<br/><small>text authored by the model</small>"]
+        payload["stdin payload<br/>model name, repo name, pr.url,<br/>pr.review_state, subagent labels"]
+        repo["Repo content<br/>.git/HEAD branch name, .git/config,<br/>.amplinerc.json found by walking up"]
+        todos["Todo files<br/>text authored by the model"]
     end
 
     subgraph controls["Controls before stdout"]
         direction TB
-        san["<b>sanitize()</b><br/><small>strips C0 and C1 controls,<br/>U+2028 and U+2029</small>"]
-        link["<b>safeLinkUrl()</b><br/><small>https only, printable ASCII,<br/>2048 chars max, no credentials</small>"]
-        own["Own-property lookup<br/><small>review_state, exact match on pr.kind</small>"]
-        gitcall["<b>Hardened git call</b><br/><small>-c core.fsmonitor= · --no-optional-locks<br/>400ms timeout · no shell</small>"]
-        cfgval["Config validation<br/><small>segment allowlist, numeric floors</small>"]
+        san["<b>sanitize()</b><br/>strips C0 and C1 controls,<br/>U+2028 and U+2029"]
+        link["<b>safeLinkUrl()</b><br/>https only, printable ASCII,<br/>2048 chars max, no credentials"]
+        own["Own-property lookup<br/>review_state, exact match on pr.kind"]
+        gitcall["<b>Hardened git call</b><br/>-c core.fsmonitor= · --no-optional-locks<br/>400ms timeout · no shell"]
+        cfgval["Config validation<br/>segment allowlist, numeric floors"]
     end
 
-    out(["stdout<br/><small>to Claude Code</small>"])
+    out(["stdout<br/>to Claude Code"])
 
     payload --> san
     payload --> link

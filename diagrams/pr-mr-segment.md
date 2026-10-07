@@ -6,20 +6,20 @@ is the product. The link is optional and has to earn its place.
 
 ```mermaid
 flowchart TB
-    start["renderPrSegment<br/><small>ctx.input.pr</small>"]
+    start["renderPrSegment<br/>ctx.input.pr"]
     has{"pr present?"}
     num{"Number(pr.number) is an<br/>integer greater than 0?"}
-    rs{"review_state is an own<br/>property of REVIEW_COLORS?<br/><small>Object.hasOwn</small>"}
+    rs{"review_state is an own<br/>property of REVIEW_COLORS?<br/>Object.hasOwn"}
     col["review color"]
     dim["dim"]
     kind{"pr.kind is exactly mr?"}
     bang["label !N"]
     hash["label #N"]
-    ce{"colorsEnabled()?<br/><small>false under NO_COLOR</small>"}
+    ce{"colorsEnabled()?<br/>false under NO_COLOR"}
     safe{"safeLinkUrl(pr.url)<br/>returns an href?"}
     link["OSC 8 link around the label"]
     plain["label with no link"]
-    nul["return null<br/><small>segment omitted</small>"]
+    nul["return null<br/>segment omitted"]
     done["color + text + RESET"]
 
     start --> has
@@ -60,13 +60,13 @@ flowchart TB
     a["1 typeof raw is string?"]
     b["2 not empty?"]
     c["3 at most 2048 chars?"]
-    d["4 only printable ASCII?<br/><small>no controls, space, DEL or non-ASCII</small>"]
+    d["4 only printable ASCII?<br/>no controls, space, DEL or non-ASCII"]
     e["5 new URL parses?"]
     f["6 protocol is https?"]
     g["7 no username or password?"]
     h["8 parsed href still<br/>under 2048 and printable ASCII?"]
     ok["emit url.href, not the raw string"]
-    fail["return null<br/><small>the number still renders, no link</small>"]
+    fail["return null<br/>the number still renders, no link"]
 
     a --> b --> c --> d --> e --> f --> g --> h --> ok
     a -.->|no| fail
