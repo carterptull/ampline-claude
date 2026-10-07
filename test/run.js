@@ -88,11 +88,17 @@ function fail(name, message) {
 function spawnRender(input, { args = [BIN], seed, env = {} } = {}) {
   const home = makeTempHome();
   if (seed) seed(home);
+  // A developer's exported NO_COLOR / FORCE_COLOR must not leak into the child:
+  // with color off, no escape is ever emitted, so every "no link" and "no stray
+  // escape" assertion would pass vacuously. Tests that want it pass it via `env`.
+  const base = { ...process.env };
+  delete base.NO_COLOR;
+  delete base.FORCE_COLOR;
   const res = spawnSync(process.execPath, args, {
     input,
     encoding: 'utf8',
     timeout: 10000,
-    env: { ...process.env, HOME: home, USERPROFILE: home, COLUMNS: '120', ...env },
+    env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '120', ...env },
   });
   try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
   return res;
@@ -110,8 +116,8 @@ function runFixture(name) {
 
 // For scenarios that are a payload plus exact-bytes assertions (color escapes,
 // OSC 8 links) rather than a standing fixture file.
-function runInline(name, payload, rules, env, seed) {
-  const res = spawnRender(typeof payload === 'string' ? payload : JSON.stringify(payload), { env, seed });
+function runInline(name, payload, rules, env, seed, args) {
+  const res = spawnRender(typeof payload === 'string' ? payload : JSON.stringify(payload), { env, seed, args });
   assertResult(name, res, rules);
 }
 
@@ -184,6 +190,20 @@ function runHaikuTests() {
   runInline('haiku effort unknown level', inlinePayload({ effort: { level: 'ultra' } }), noEffort);
   runInline('haiku effort numeric budget', inlinePayload({ effort: { level: 12000 } }), noEffort);
 
+  // Subagent rows color by family. They rarely carry effort, but when a Haiku
+  // task does send a level string it follows the same ramp as the main line.
+  const subTask = (extra) => ({
+    columns: 120,
+    tasks: [{ id: 't1', type: 'local_agent', status: 'running', label: 'worker',
+              model: 'claude-haiku-5-5', tokenCount: 1000, contextWindowSize: 200000, cwd: '/tmp/project', ...extra }],
+  });
+  runInline('haiku subagent row with effort follows the ramp', subTask({ effort: 'low' }),
+    { expect: [sgr(HAIKU_RAMP.low)], refute: ['NaN', 'undefined'] }, {}, undefined, [BIN, '--subagent']);
+  runInline('haiku subagent row without effort stays flat blue', subTask({}),
+    { expect: [sgr(HAIKU_FLAT)], refute: [sgr(HAIKU_RAMP.low), 'NaN', 'undefined'] }, {}, undefined, [BIN, '--subagent']);
+  runInline('haiku subagent row with numeric budget stays flat blue', subTask({ effort: 12000 }),
+    { expect: [sgr(HAIKU_FLAT)], refute: [sgr(HAIKU_RAMP.low), 'NaN', 'undefined'] }, {}, undefined, [BIN, '--subagent']);
+
   const { WHEEL } = require('../lib/colors');
   if (WHEEL.length !== 20) fail('WHEEL', `expected 20 steps, got ${WHEEL.length}`);
   else if (new Set(WHEEL.map((c) => c.join(','))).size !== 20) fail('WHEEL', 'steps are not all distinct');
@@ -254,6 +274,28 @@ function runPrTests() {
     runInline(`pr hostile url: ${label}`, prPayload({ number: 3, url, review_state: 'pending' }),
       { expect: ['#3'], refute: [OSC8, ...(bad ? [bad] : []), 'NaN', 'undefined'] });
   }
+
+  // pr.number must be a real positive safe integer (or a plain digit string).
+  // Number() coercion used to accept 1e21, "0x10", " 5 ", [5] and true.
+  const malformedNumbers = {
+    'exponent 1e21':         1e21,
+    'hex string':            '0x10',
+    'padded string':         ' 5 ',
+    'exponent string':       '1e3',
+    'decimal string':        '5.5',
+    'negative string':       '-3',
+    'array':                 [5],
+    'boolean true':          true,
+    'beyond safe integer':   9007199254740993,
+  };
+  for (const [label, number] of Object.entries(malformedNumbers)) {
+    runInline(`pr number rejected: ${label}`, prPayload({ number, url: ghUrl }),
+      { refute: ['#', '!', 'e+', 'NaN', 'undefined'] });
+  }
+  runInline('pr number accepted: plain integer', prPayload({ number: 7, url: ghUrl }), { expect: ['#7'] });
+  runInline('pr number accepted: digit string', prPayload({ number: '15', url: ghUrl }), { expect: ['#15'] });
+  runInline('pr number accepted: largest safe integer', prPayload({ number: 9007199254740991, url: ghUrl }),
+    { expect: ['#9007199254740991'] });
 
   // No escape sequences of any kind when the user opted out of color.
   runInline('pr link omitted under NO_COLOR', prPayload({ number: 12, url: ghUrl }),

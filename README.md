@@ -301,7 +301,8 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
   resolves the current branch's pull request or merge request itself and puts the result in
   the payload. `ampline-claude` never runs `gh`, `glab`, or any other command to look one up,
   and never reads a token. If Claude Code sends nothing, the segment is left out, the same as
-  if there were no open PR. What Claude Code itself needs to find one:
+  if there were no open PR. What Claude Code itself needs to find one, per its own
+  documentation (not independently verified for GitLab, see `DECISIONS.md` D38):
   - **GitHub:** a GitHub token, either the one saved by `gh auth login` or `GH_TOKEN` /
     `GITHUB_TOKEN` (GitHub Enterprise hosts use their own variables).
   - **GitLab (merge requests, shown as `!N`):** Claude Code v2.1.234 or later, a remote on

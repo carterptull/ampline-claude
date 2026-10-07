@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `pr.review_state` value that matches a name on `Object.prototype` (for example
   `"constructor"`) printed function source into the statusline. It is now looked up as an
   own property only.
+- A `pr.number` that was not a plain positive integer could still render something that was
+  not a PR number (`true` as `#1`, `"0x10"` as `#16`, `1e21` as `#1e+21`). Such values now
+  omit the segment.
+- The test runner no longer inherits `NO_COLOR` or `FORCE_COLOR` from the caller's shell.
+  Exporting `NO_COLOR` used to fail the color checks and let the hostile-URL checks pass
+  without testing anything.
 
 ### Changed
 - README and `CLAUDE.md` now describe both GitHub and GitLab requirements for the PR/MR

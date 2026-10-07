@@ -52,8 +52,8 @@ level if a family ever lacks one, and the code notes this may never fire in prac
 Each hex was converted from the RGB triples in `MODEL_GRADIENTS`. For example Haiku low is
 `61,100,232`, which is `#3D64E8`, and Fable max is `128,0,192`, which is `#8000C0`. Read left to
 right and top to bottom, the sweep goes blue, cyan, green, yellow, orange, red, pink, violet,
-purple. The `WHEEL` export is these same 20 triples in that order and is used by the README table
-generator and tests, not at render time.
+purple. The `WHEEL` export is these same 20 triples in that order and is used by the tests, not at
+render time.
 
 ## Why this is a separate scale from usage bars
 
@@ -87,7 +87,7 @@ flowchart LR
 urgency signal. A red Opus is not a warning, it is just Opus. The only bold on the wheel is effort
 `max`, and only the effort word is bolded, not the model name. The danger ramp is the opposite:
 the colors are a green to red climb, and bold starts at 85 percent. A non-finite percentage
-returns `null` from `dangerStyle`, and `renderBar` then prints the bar with no styling. A stale
+makes `renderBar` return `null` before `dangerStyle` is ever called, so the segment is omitted. A stale
 cached value renders dim with no danger color, bold or glyph, because urgency from a possibly
 outdated number is worse than none.
 

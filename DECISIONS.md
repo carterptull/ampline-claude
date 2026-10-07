@@ -667,8 +667,9 @@ family where the effort word has no color cue.
 (Haiku 4.5, `effort: null`, a numeric budget, an unknown string) still returns `#7DB8E8`
 exactly. Every other family keeps falling back to `high` for missing effort; Haiku does not,
 because "Haiku with no effort" must look like it always has rather than jump to a mid-blue.
-This also keeps subagent rows, which are colored by family only and rarely carry effort,
-unchanged.
+Subagent rows are colored by family and rarely carry effort, so they stay on the flat blue.
+When a Haiku subagent task does send an effort level string, it follows the same ramp as the
+main line, and a numeric token budget still normalizes to no effort (covered by tests).
 
 **How the stops were chosen (measured, not eyeballed).** CIE76 ΔE between adjacent stops is
 15 to 16, above the tightest existing wheel step (Opus high to xhigh, 10.5). Contrast of the
@@ -714,6 +715,13 @@ wrapping is unaffected. `NO_COLOR` means plain text, so no link is emitted there
 **Rejected:** a host allowlist (self-managed GitLab and GitHub Enterprise hosts are arbitrary);
 inferring `kind` from the URL; skipping the link because Claude Code's footer already has a
 clickable badge (the statusline link is wanted, and the validation makes it safe).
+
+**Also fixed here, found in review:** `pr.number` went through bare `Number()`, which accepted
+`true`, `[5]`, `" 5 "`, `"0x10"` and `1e21` and printed something other than a PR number
+(`#1e+21`, `#16`). It now takes a real number or a plain digit string and requires a positive
+safe integer, otherwise the segment is omitted. The test runner also now scrubs `NO_COLOR` and
+`FORCE_COLOR` from the child environment, because with color off nothing emits a link and the
+hostile-URL tests would pass without testing anything.
 
 **Also fixed here:** `REVIEW_COLORS[pr.review_state]` used a foreign string as a bare object
 key, so `review_state: "constructor"` resolved to `Object.prototype.constructor` and printed
