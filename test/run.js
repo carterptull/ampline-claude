@@ -70,7 +70,7 @@ const EXPECTATIONS = {
   'malformed.txt':             { refute: ['NaN'] },
   'empty.txt':                 { refute: ['NaN'], expectStderr: ['no input received', '--install'] },
   'pr-null-number.json':       { refute: ['#0', 'NaN', 'undefined'] },
-  'pr-gitlab-shape.json':      { expect: ['#42'], refute: ['NaN'] },
+  'pr-gitlab-shape.json':      { expect: ['!42'], refute: ['#42', 'NaN'] },
   'resets-at-ms.json':         { expect: ['H'], refute: ['↺', 'NaN'] },
   'separator-injection.json':  { refute: [String.fromCharCode(27) + ']8;;http://evil.example', 'NaN'] },
   'emoji-task.json':           { refute: [String.fromCodePoint(0xfffd), 'NaN'] },
@@ -110,8 +110,8 @@ function runFixture(name) {
 
 // For scenarios that are a payload plus exact-bytes assertions (color escapes,
 // OSC 8 links) rather than a standing fixture file.
-function runInline(name, payload, rules, env) {
-  const res = spawnRender(typeof payload === 'string' ? payload : JSON.stringify(payload), { env });
+function runInline(name, payload, rules, env, seed) {
+  const res = spawnRender(typeof payload === 'string' ? payload : JSON.stringify(payload), { env, seed });
   assertResult(name, res, rules);
 }
 
@@ -190,6 +190,79 @@ function runHaikuTests() {
   else console.log('  ok    WHEEL has 20 distinct steps');
 }
 
+// ---- PR / MR segment -------------------------------------------------------
+// Claude Code fills `pr` from `gh` (GitHub) or `glab` (GitLab, `kind: "mr"`).
+// pr.url is a foreign string: the number must always render, but the label only
+// becomes a clickable OSC 8 link when the URL passes a strict https allowlist.
+const OSC8 = ESC + ']8;';
+const linkOpen = (url) => `${OSC8};${url}${BEL}`;
+const linkClose = `${OSC8};${BEL}`;
+
+function prPayload(pr) {
+  return inlinePayload({
+    model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' },
+    effort: { level: 'high' },
+    pr,
+  });
+}
+
+function runPrTests() {
+  const ghUrl = 'https://github.com/carterptull/ampline-claude/pull/12';
+  const glUrl = 'https://gitlab.com/group/project/-/merge_requests/42';
+  const nestedUrl = 'https://git.example.com/a/b/c/project/-/merge_requests/7';
+
+  runInline('pr github: #N, linked', prPayload({ number: 12, url: ghUrl, review_state: 'pending' }),
+    { expect: ['#12', linkOpen(ghUrl), linkClose], refute: ['!12', 'NaN'] });
+  runInline('pr gitlab mr: !N, linked', prPayload({ number: 42, url: glUrl, review_state: 'approved', kind: 'mr' }),
+    { expect: ['!42', linkOpen(glUrl), linkClose], refute: ['#42', 'NaN'] });
+  runInline('pr gitlab mr: self-managed nested subgroup', prPayload({ number: 7, url: nestedUrl, kind: 'mr' }),
+    { expect: ['!7', linkOpen(nestedUrl)], refute: ['#7'] });
+  runInline('pr mr without url: label only', prPayload({ number: 9, review_state: 'pending', kind: 'mr' }),
+    { expect: ['!9'], refute: [OSC8, '#9'] });
+  runInline('pr kind other than "mr" falls back to #N', prPayload({ number: 9, url: glUrl, kind: 'weird' }),
+    { expect: ['#9'], refute: ['!9', 'weird'] });
+  runInline('pr kind with escape bytes is never interpolated',
+    prPayload({ number: 9, url: glUrl, kind: ESC + '[31mmr' }),
+    { expect: ['#9'], refute: [ESC + '[31mmr', '!9'] });
+
+  // review_state is a foreign string used as a lookup key: names that exist on
+  // Object.prototype must not resolve to a "color" and print function source.
+  for (const state of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    runInline(`pr review_state=${state} is not a color`, prPayload({ number: 5, url: ghUrl, review_state: state }),
+      { expect: ['#5'], refute: ['function', 'native code', '[object', 'undefined'] });
+  }
+
+  // Hostile or unusable URLs: the number still renders, no link is emitted, and
+  // none of the attacker's bytes reach stdout.
+  const hostile = {
+    'javascript: scheme':        { url: 'javascript:alert(1)' },
+    'file: scheme':              { url: 'file:///c:/windows/system32' },
+    'plain http':                { url: 'http://gitlab.com/x' },
+    'embedded credentials':      { url: 'https://user:pw@gitlab.com/x' },
+    'BEL + OSC title breakout':  { url: 'https://gitlab.com/x' + BEL + ESC + ']0;pwned' + BEL, bad: ESC + ']0;pwned' },
+    'ESC CSI clear-screen':      { url: 'https://gitlab.com/x' + ESC + '[2J', bad: ESC + '[2J' },
+    'space in URL':              { url: 'https://gitlab.com/x y' },
+    'newline in URL':            { url: 'https://gitlab.com/x\ny' },
+    'non-ASCII character':       { url: 'https://gitlab.com/\u00e9' },
+    'unicode line separator':    { url: 'https://gitlab.com/x\u2028y' },
+    'over 2048 characters':      { url: 'https://gitlab.com/' + 'a'.repeat(5000) },
+    'empty string':              { url: '' },
+    'not a string':              { url: { href: 'https://gitlab.com/x' } },
+    'not a URL at all':          { url: 'not a url' },
+  };
+  for (const [label, { url, bad }] of Object.entries(hostile)) {
+    runInline(`pr hostile url: ${label}`, prPayload({ number: 3, url, review_state: 'pending' }),
+      { expect: ['#3'], refute: [OSC8, ...(bad ? [bad] : []), 'NaN', 'undefined'] });
+  }
+
+  // No escape sequences of any kind when the user opted out of color.
+  runInline('pr link omitted under NO_COLOR', prPayload({ number: 12, url: ghUrl }),
+    { expect: ['#12'], refute: [OSC8, ESC + '['] }, { NO_COLOR: '1' });
+  runInline('pr link omitted when config color is false', prPayload({ number: 12, url: ghUrl }),
+    { expect: ['#12'], refute: [OSC8, ESC + '['] }, {},
+    (home) => fs.writeFileSync(path.join(home, '.amplinerc.json'), JSON.stringify({ color: false }) + '\n', 'utf8'));
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -200,6 +273,7 @@ function main() {
   for (const name of names) runFixture(name);
 
   runHaikuTests();
+  runPrTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();
