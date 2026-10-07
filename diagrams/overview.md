@@ -7,30 +7,30 @@ bottom).
 
 ```mermaid
 flowchart TB
-    cc(["🖥️ Claude Code<br/><small>runs the statusLine and<br/>subagentStatusLine commands</small>"])
+    cc(["🖥️ Claude Code<br/>runs the statusLine and<br/>subagentStatusLine commands"])
 
-    bin["<b>bin/ampline-claude.js</b><br/><small>reads stdin (500ms timeout), parses JSON,<br/>writes stdout, then exits 0</small>"]
+    bin["<b>bin/ampline-claude.js</b><br/>reads stdin (500ms timeout), parses JSON,<br/>writes stdout, then exits 0"]
 
     subgraph main["Main statusline path"]
         direction TB
-        render["<b>lib/render.js</b><br/><small>loads config, resolves usage,<br/>calls each segment in order</small>"]
-        cfg["lib/config.js<br/><small>.amplinerc.json, nearest file wins</small>"]
-        usage["lib/usage.js<br/><small>rate_limits from stdin,<br/>cache as fallback</small>"]
-        pure["Payload-only segments<br/><small>dir · model · context · fiveHour<br/>weekly · cost · pr</small>"]
-        gitseg["git segment<br/><small>.git/HEAD plus one<br/>git status call</small>"]
-        taskseg["task segment<br/><small>in-progress todo</small>"]
-        layout["lib/layout.js<br/><small>one line, or two if too wide</small>"]
+        render["<b>lib/render.js</b><br/>loads config, resolves usage,<br/>calls each segment in order"]
+        cfg["lib/config.js<br/>.amplinerc.json, nearest file wins"]
+        usage["lib/usage.js<br/>rate_limits from stdin,<br/>cache as fallback"]
+        pure["Payload-only segments<br/>dir · model · context · fiveHour<br/>weekly · cost · pr"]
+        gitseg["git segment<br/>.git/HEAD plus one<br/>git status call"]
+        taskseg["task segment<br/>in-progress todo"]
+        layout["lib/layout.js<br/>one line, or two if too wide"]
     end
 
-    sub["<b>segments/subagents.js</b><br/><small>separate path: one row per task,<br/>width from the payload</small>"]
+    sub["<b>segments/subagents.js</b><br/>separate path: one row per task,<br/>width from the payload"]
 
     subgraph disk["Local disk"]
         direction LR
-        cache[("cache/ampline<br/><small>JSON files, fresh and stale tiers</small>")]
-        todos[("todos/<br/><small>written by Claude Code</small>")]
+        cache[("cache/ampline<br/>JSON files, fresh and stale tiers")]
+        todos[("todos/<br/>written by Claude Code")]
     end
 
-    inst["lib/install.js<br/><small>npx ampline-claude --install</small>"]
+    inst["lib/install.js<br/>npx ampline-claude --install"]
 
     cc -->|"JSON on stdin"| bin
     bin -->|"default"| render
