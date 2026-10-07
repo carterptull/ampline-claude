@@ -50,6 +50,7 @@ function seedFilesFor(name, home) {
 const EXPECTATIONS = {
   'full.json':                 { expect: ['Opus', '#1234'], refute: ['NaN', 'undefined'], refuteStderr: ['no input received'] },
   'haiku-no-effort.json':      { refute: ['high', 'NaN'] },
+  'haiku-5-5-medium.json':     { expect: ['Haiku 5.5', 'medium', '\x1b[38;2;77;121;232m'], refute: ['NaN'] },
   'sonnet-low.json':           { expect: ['low'], refute: ['NaN'] },
   'sonnet-max.json':           { expect: ['max'], refute: ['NaN'] },
   'opus-xhigh.json':           { expect: ['xhigh'], refute: ['NaN'] },
@@ -82,22 +83,39 @@ function fail(name, message) {
   console.error(`  FAIL  ${name}: ${message}`);
 }
 
-function runFixture(name) {
-  const file = path.join(FIXTURES, name);
-  const input = fs.readFileSync(file, 'utf8');
-  const isSubagent = name.startsWith('subagent');
-  const args = isSubagent ? [BIN, '--subagent'] : [BIN];
-
+// Spawns the real binary against `input` in a throwaway HOME. `seed(home)` can
+// drop companion files in first; `env` overlays the child's environment.
+function spawnRender(input, { args = [BIN], seed, env = {} } = {}) {
   const home = makeTempHome();
-  seedFilesFor(name, home);
+  if (seed) seed(home);
   const res = spawnSync(process.execPath, args, {
     input,
     encoding: 'utf8',
     timeout: 10000,
-    env: { ...process.env, HOME: home, USERPROFILE: home, COLUMNS: '120' },
+    env: { ...process.env, HOME: home, USERPROFILE: home, COLUMNS: '120', ...env },
   });
   try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  return res;
+}
 
+function runFixture(name) {
+  const input = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
+  const isSubagent = name.startsWith('subagent');
+  const res = spawnRender(input, {
+    args: isSubagent ? [BIN, '--subagent'] : [BIN],
+    seed: (home) => seedFilesFor(name, home),
+  });
+  assertResult(name, res, EXPECTATIONS[name] || {});
+}
+
+// For scenarios that are a payload plus exact-bytes assertions (color escapes,
+// OSC 8 links) rather than a standing fixture file.
+function runInline(name, payload, rules, env) {
+  const res = spawnRender(typeof payload === 'string' ? payload : JSON.stringify(payload), { env });
+  assertResult(name, res, rules);
+}
+
+function assertResult(name, res, rules) {
   if (res.error) return fail(name, `spawn error: ${res.error.message}`);
   if (res.status !== 0) return fail(name, `exit code ${res.status}`);
   if (typeof res.stdout !== 'string') return fail(name, 'stdout is not a string');
@@ -105,7 +123,6 @@ function runFixture(name) {
     return fail(name, `stderr contained an error: ${res.stderr.trim().slice(0, 200)}`);
   }
 
-  const rules = EXPECTATIONS[name] || {};
   for (const needle of rules.expect || []) {
     if (!res.stdout.includes(needle)) return fail(name, `expected stdout to contain ${JSON.stringify(needle)}`);
   }
@@ -122,6 +139,57 @@ function runFixture(name) {
   console.log(`  ok    ${name}`);
 }
 
+const ESC = String.fromCharCode(27);
+const BEL = String.fromCharCode(7);
+const sgr = ([r, g, b]) => `${ESC}[38;2;${r};${g};${b}m`;
+
+// A minimal valid statusline payload; `extra` overlays top-level keys.
+function inlinePayload(extra) {
+  return {
+    session_id: 'inline',
+    cwd: '/tmp/project',
+    model: { id: 'claude-haiku-5-5', display_name: 'Haiku 5.5' },
+    context_window: { used_percentage: 12, remaining_percentage: 88 },
+    ...extra,
+  };
+}
+
+// Haiku 5.5 has real effort levels: a dark-to-light blue ramp that ends at the
+// flat Haiku blue used before 5.5. No effort data at all (Haiku 4.5, a numeric
+// budget, an unknown string) keeps that blue exactly.
+const HAIKU_RAMP = {
+  low:    [61, 100, 232],
+  medium: [77, 121, 232],
+  high:   [93, 142, 232],
+  xhigh:  [109, 163, 232],
+  max:    [125, 184, 232],
+};
+const HAIKU_FLAT = [125, 184, 232];
+
+function runHaikuTests() {
+  for (const [level, rgb] of Object.entries(HAIKU_RAMP)) {
+    const rules = { expect: [sgr(rgb), level], refute: ['NaN', 'undefined'] };
+    if (level === 'max') {
+      rules.expect.push(ESC + '[1m' + sgr(rgb)); // only max is bold
+    } else {
+      rules.refute.push(ESC + '[1m', sgr(HAIKU_FLAT)); // others: quiet, and not the old flat blue
+    }
+    runInline(`haiku-5-5 effort=${level}`, inlinePayload({ effort: { level } }), rules);
+  }
+
+  const stops = Object.values(HAIKU_RAMP).slice(0, 4).map(sgr);
+  const noEffort = { expect: [sgr(HAIKU_FLAT)], refute: [...stops, 'NaN', 'undefined', ESC + '[1m'] };
+  runInline('haiku no effort field',      inlinePayload({}), noEffort);
+  runInline('haiku effort=null',          inlinePayload({ effort: null }), noEffort);
+  runInline('haiku effort unknown level', inlinePayload({ effort: { level: 'ultra' } }), noEffort);
+  runInline('haiku effort numeric budget', inlinePayload({ effort: { level: 12000 } }), noEffort);
+
+  const { WHEEL } = require('../lib/colors');
+  if (WHEEL.length !== 20) fail('WHEEL', `expected 20 steps, got ${WHEEL.length}`);
+  else if (new Set(WHEEL.map((c) => c.join(','))).size !== 20) fail('WHEEL', 'steps are not all distinct');
+  else console.log('  ok    WHEEL has 20 distinct steps');
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -130,6 +198,8 @@ function main() {
   }
   console.log(`Running ${names.length} fixtures against ${path.relative(ROOT, BIN)}\n`);
   for (const name of names) runFixture(name);
+
+  runHaikuTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();
