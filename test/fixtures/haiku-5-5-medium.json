@@ -1,0 +1,11 @@
+{
+  "session_id": "fixture-haiku-5-5-medium",
+  "cwd": "/tmp/project",
+  "model": { "id": "claude-haiku-5-5", "display_name": "Haiku 5.5" },
+  "effort": { "level": "medium" },
+  "workspace": {
+    "current_dir": "/tmp/project",
+    "repo": { "host": "github.com", "owner": "carterptull", "name": "ampline-claude" }
+  },
+  "context_window": { "used_percentage": 12, "remaining_percentage": 88 }
+}

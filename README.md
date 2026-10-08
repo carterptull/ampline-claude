@@ -6,7 +6,7 @@
 [![CI](https://github.com/carterptull/ampline-claude/actions/workflows/ci.yml/badge.svg)](https://github.com/carterptull/ampline-claude/actions/workflows/ci.yml)
 
 **Amplify your statusline.** ampline-claude is a color-graded, zero-dependency statusline for
-Claude Code, built by Paymon Software. Its signature feature is a continuous 16-step color
+Claude Code, built by Paymon Software. Its signature feature is a continuous 20-step color
 wheel across the model and effort space. No other Claude Code statusline shows you what's
 running and how hard, in color, at a glance, on one line.
 
@@ -94,18 +94,18 @@ usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare
 |---|---|---|
 | Directory | `ampline-claude` | repo name as Claude Code reports it, falls back to the folder name |
 | Git | `⎇ main ↑2 ●` | branch, ahead/behind, dirty (`●`) or clean (`✓`). `✓` means no *tracked* changes, see below |
-| Model + effort | `Opus 5 · high` | the 16-step wheel, see below |
+| Model + effort | `Opus 5.5 · high` | the 20-step wheel, see below |
 | Context | `C34 ███░░░░░` | context-window usage, green→red. Reflects the last completed API call, see below |
 | 5-hour usage | `H93 ███████░ ↺ 4h28m` | rate-limit window, with reset countdown. Subscription accounts only, see below |
 | Weekly usage | `W17 █░░░░░░░ ↺ 2d23h` | same shape, 7-day window. Subscription accounts only, see below |
 | Cost | `$12.47 +2412/-1` | session cost estimate + lines changed |
 | Task | `Writing the render module…` | current in-progress todo, dimmed |
-| PR | `#1` | open PR for the current branch, colored by review state |
+| PR / MR | `#1` or `!7` | open GitHub PR (`#N`) or GitLab merge request (`!N`) for the current branch, colored by review state. The number is a clickable link in terminals that support hyperlinks |
 
 A full line looks like:
 
 ```
-ampline-claude │ ⎇ main ✓ │ Opus 5 · high │ C34 ███░░░░░ │ H93 ███████░ ↺ 4h28m │ W17 █░░░░░░░ ↺ 2d23h │ $12.47 +2412/-1 │ #1
+ampline-claude │ ⎇ main ✓ │ Opus 5.5 · high │ C34 ███░░░░░ │ H93 ███████░ ↺ 4h28m │ W17 █░░░░░░░ ↺ 2d23h │ $12.47 +2412/-1 │ #1
 ```
 
 Wraps to two lines automatically when it doesn't fit `COLUMNS`.
@@ -127,25 +127,35 @@ Blue → cyan → green → yellow → orange → red → pink → violet → pu
 
 | # | Model | Effort | Color | Hex |
 |---|---|---|---|---|
-| 0 | Haiku 4.5 | (none) | light blue | `#7DB8E8` |
-| 1 | Sonnet 5 | low | cyan | `#5CE8D0` |
-| 2 | Sonnet 5 | medium | teal | `#4AC98C` |
-| 3 | Sonnet 5 | high | green | `#7ACC3D` |
-| 4 | Sonnet 5 | xhigh | yellow-green | `#C4CC3D` |
-| 5 | Sonnet 5 | max | yellow | `#E8B23D` |
-| 6 | Opus 5 | low | light orange | `#E8963D` |
-| 7 | Opus 5 | medium | orange | `#E8763D` |
-| 8 | Opus 5 | high | red-orange | `#E85A3D` |
-| 9 | Opus 5 | xhigh | red | `#E8433D` |
-| 10 | Opus 5 | max | deep red | `#D8203D` |
-| 11 | Fable 5 | low | light pink | `#E88CC8` |
-| 12 | Fable 5 | medium | pink | `#E85CB3` |
-| 13 | Fable 5 | high | violet | `#C43DE8` |
-| 14 | Fable 5 | xhigh | magenta | `#B300D8` |
-| 15 | Fable 5 | max | purple | `#8000C0` |
+| 0 | Haiku 5.5 | low | royal blue | `#3D64E8` |
+| 1 | Haiku 5.5 | medium | cornflower blue | `#4D79E8` |
+| 2 | Haiku 5.5 | high | azure | `#5D8EE8` |
+| 3 | Haiku 5.5 | xhigh | sky blue | `#6DA3E8` |
+| 4 | Haiku 5.5 | max | light blue | `#7DB8E8` |
+| 5 | Sonnet 5.5 | low | cyan | `#5CE8D0` |
+| 6 | Sonnet 5.5 | medium | teal | `#4AC98C` |
+| 7 | Sonnet 5.5 | high | green | `#7ACC3D` |
+| 8 | Sonnet 5.5 | xhigh | yellow-green | `#C4CC3D` |
+| 9 | Sonnet 5.5 | max | yellow | `#E8B23D` |
+| 10 | Opus 5.5 | low | light orange | `#E8963D` |
+| 11 | Opus 5.5 | medium | orange | `#E8763D` |
+| 12 | Opus 5.5 | high | red-orange | `#E85A3D` |
+| 13 | Opus 5.5 | xhigh | red | `#E8433D` |
+| 14 | Opus 5.5 | max | deep red | `#D8203D` |
+| 15 | Fable 5.1 | low | light pink | `#E88CC8` |
+| 16 | Fable 5.1 | medium | pink | `#E85CB3` |
+| 17 | Fable 5.1 | high | violet | `#C43DE8` |
+| 18 | Fable 5.1 | xhigh | magenta | `#B300D8` |
+| 19 | Fable 5.1 | max | purple | `#8000C0` |
 
-Haiku has no effort levels, so it's a flat color. Every other level renders un-bold except
-`max`, which is bold. It's the one effort level loud enough to earn it.
+Haiku 5.5 reports effort, so it runs from a deeper blue at `low` up to the light blue at
+`max`. Haiku 4.5, or any Haiku that sends no effort data, has nothing to grade, so it stays a
+flat `#7DB8E8`, the same color as Haiku 5.5 `max`. For every other family, missing effort
+falls back to that family's `high` color. Models are matched on family, so a point release
+such as Sonnet 5.5 or Opus 5.5 uses its family's colors.
+
+Every effort level renders un-bold except `max`, which is bold. It's the one effort level
+loud enough to earn it.
 
 **Why usage bars don't use the wheel.** Context and rate-limit usage get a separate, plain
 green→yellow→orange→red→darkest-red ramp instead, bolding at 85% and adding a `⚠` at 95%.
@@ -209,6 +219,8 @@ If data's missing, that one segment just gets skipped and the rest of the line s
 
 More detail:
 - [`CLAUDE.md`](CLAUDE.md): module architecture, frozen interfaces, the rules that apply everywhere
+- [`diagrams/`](diagrams/README.md): architecture diagrams, starting with
+  [`overview.md`](diagrams/overview.md)
 - [`DECISIONS.md`](DECISIONS.md): every design decision and why, including where the live
   Claude Code payload disagreed with documentation
 - [`CHANGELOG.md`](CHANGELOG.md): what shipped in each version
@@ -285,13 +297,25 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
   once that call finishes. Claude Code re-renders the statusline within about 300ms of the
   value changing, so this is not a refresh problem, and changing `refreshInterval` does not
   affect it. There is no fix available from the statusline side.
-- **The PR segment renders whatever Claude Code hands it, and nothing more.** Claude Code
-  resolves the current branch's PR itself and puts the result in the payload. It needs the
-  `gh` CLI installed and authenticated on the machine it runs on to do that.
-  `ampline-claude` never runs `gh`, or any other command, to look a PR up. If Claude Code
-  sends no PR, the segment is left out, the same as if there were no open PR. This also
-  means support for hosts other than GitHub is Claude Code's to add, not something
-  `ampline-claude` can provide on its own.
+- **The PR/MR segment renders whatever Claude Code hands it, and nothing more.** Claude Code
+  resolves the current branch's pull request or merge request itself and puts the result in
+  the payload. `ampline-claude` never runs `gh`, `glab`, or any other command to look one up,
+  and never reads a token. If Claude Code sends nothing, the segment is left out, the same as
+  if there were no open PR. What Claude Code itself needs to find one, per its own
+  documentation (not independently verified for GitLab, see `DECISIONS.md` D38):
+  - **GitHub:** a GitHub token, either the one saved by `gh auth login` or `GH_TOKEN` /
+    `GITHUB_TOKEN` (GitHub Enterprise hosts use their own variables).
+  - **GitLab (merge requests, shown as `!N`):** Claude Code v2.1.234 or later, a remote on
+    gitlab.com or a self-managed GitLab host, and the `glab` CLI on `PATH` and logged in with
+    `glab auth login`. Claude Code ignores `GITLAB_TOKEN`, and checks for `glab` and its login
+    once per session, so restart Claude Code after installing or logging in.
+  On an MR, green means GitLab reports it mergeable, not that someone approved it.
+- **The PR/MR number is a link only when the URL is a plain `https` one.** Claude Code supplies
+  the URL, and `ampline-claude` only turns the number into a clickable hyperlink when that URL
+  is printable ASCII, at most 2048 characters, uses `https`, and carries no username or
+  password. Otherwise the number still shows, as plain text. Terminals without hyperlink
+  support, such as macOS Terminal.app, show the number without a link. `NO_COLOR` and
+  `"color": false` also turn the link off.
 - **Linux is verified on real hardware. macOS is not yet.** The fixture suite, the install
   and uninstall flow, the shebang, UTF-8 glyph output, and color behavior have all been
   confirmed on a real Linux box, including the absolute-Node-path resolution a

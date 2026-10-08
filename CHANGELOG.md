@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
+### Added
+- **Haiku 5.5 effort colors.** Haiku 5.5 reports effort levels, so Haiku now has a five-stop
+  blue ramp from `#3D64E8` at `low` up to the existing `#7DB8E8` at `max`. The wheel is
+  now 20 steps. Haiku with no effort data (Haiku 4.5) keeps the flat `#7DB8E8` it always had.
+  See `DECISIONS.md` D37.
+- **GitLab merge requests show as `!N`.** Claude Code v2.1.234 added GitLab merge request
+  support and sets `pr.kind` to `"mr"`. The PR segment now renders GitLab's own `!N` for
+  merge requests and keeps `#N` for GitHub pull requests.
+- **The PR/MR number is a clickable link** in terminals that support hyperlinks, when
+  `pr.url` is a plain `https` URL (printable ASCII, at most 2048 characters, no username
+  or password). Any other URL leaves the number as plain text. No link is emitted under
+  `NO_COLOR` or `"color": false`. See `DECISIONS.md` D38.
+- `diagrams/`: hand-maintained Mermaid architecture diagrams, linked from the README and
+  `CLAUDE.md`.
+- Test runner helpers for inline payloads and exact escape-sequence assertions, plus tests for
+  the Haiku ramp, the PR/MR label, hostile `pr.url` values, and `pr.kind` handling.
+
+### Fixed
+- A `pr.review_state` value that matches a name on `Object.prototype` (for example
+  `"constructor"`) printed function source into the statusline. It is now looked up as an
+  own property only.
+- A `pr.number` that was not a plain positive integer could still render something that was
+  not a PR number (`true` as `#1`, `"0x10"` as `#16`, `1e21` as `#1e+21`). Such values now
+  omit the segment.
+- The test runner no longer inherits `NO_COLOR` or `FORCE_COLOR` from the caller's shell.
+  Exporting `NO_COLOR` used to fail the color checks and let the hostile-URL checks pass
+  without testing anything.
+
+### Changed
+- README and `CLAUDE.md` now describe both GitHub and GitLab requirements for the PR/MR
+  segment (a GitHub token, or `glab` logged in plus Claude Code v2.1.234 or later), and use the
+  5.5 model names in the wheel table.
+- Package description and docs say 20-step wheel, up from 16.
+
 ## [0.5.0] - 2026-08-09
 
 ### Changed

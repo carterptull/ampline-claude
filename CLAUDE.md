@@ -15,9 +15,9 @@ lines of ANSI-colored text to stdout. Installed via `npx ampline-claude --instal
 - **Never add a runtime dependency.** `package.json` has no `dependencies` field. Keeping it
   that way is the point — instant `npx`, zero supply-chain surface.
 - **Never add a network call or read a credential.** No exceptions. Usage data comes only
-  from stdin `rate_limits`, cached to disk. See `lib/usage.js` and `DECISIONS.md`'s "no
-  network" entry for why an OAuth fallback was rejected.
-- **Color = identity, bold = urgency.** The 16-step model/effort wheel (`lib/colors.js`)
+  from stdin `rate_limits`, cached to disk. See `lib/usage.js` and the README FAQ
+  ("Does it read my credentials?") for why an OAuth fallback was rejected.
+- **Color = identity, bold = urgency.** The 20-step model/effort wheel (`lib/colors.js`)
   carries no urgency signal — only `max` bolds, because it's inherently "pay attention."
   Usage bars (`lib/bar.js`) are the opposite: a separate green→red danger ramp, bold reserved
   for the 85%+ threshold. Don't blend the two scales.
@@ -73,9 +73,12 @@ lib/
                                .git/config cannot run a hook command through this call).
     cost.js                     Session cost + lines added/removed.
     task.js                      Current in-progress todo, from ~/.claude/todos/.
-    pr.js                          Open PR + review state. Requires `gh` CLI installed and
-                                   authenticated on the machine Claude Code runs in — that's
-                                   Claude Code's dependency, not ours; see DECISIONS.md D12.
+    pr.js                          Open PR (`#N`) or GitLab MR (`!N`, when `pr.kind === 'mr'`) +
+                                   review state. Claude Code fills `pr` (via `gh` or `glab`
+                                   on the machine it runs on) — that's its dependency, not
+                                   ours; see DECISIONS.md D12 and D38. The number becomes an
+                                   OSC 8 link only when `pr.url` passes `safeLinkUrl` (https,
+                                   printable ASCII, <=2048 chars, no credentials).
     subagents.js                   subagentStatusLine renderer. Different payload shape
                                    entirely — see "The subagent payload" below.
 ```
@@ -114,6 +117,7 @@ lib/render.js    renderStatusline(input) -> string                  <- SYNCHRONO
 lib/install.js   runInstaller(options) -> void · INSTALL_DIR
 
 segments         render<Name>Segment(ctx) -> string | null
+                 segments/pr.js also exports safeLinkUrl(raw) -> href | null
                  ctx = { input, config, usage }                     <- ONE object argument
 ```
 
@@ -164,6 +168,16 @@ non-zero exit from the statusline path, never a partial/garbled line. Specifical
 | Usage | `usage` | n/a (write-through) | 24h + resets_at rollover check | stdin is authoritative when present; cache only covers cold start |
 | Git state | `git:<gitdir>` | 5s | 60s | one subprocess call; 5s is below human perception for branch/dirty changes |
 | Current task | `task:<session_id>` | 3s | 15s | filesystem I/O; todos don't change faster than this |
+
+## Diagrams
+
+`diagrams/` holds hand-maintained Mermaid architecture diagrams (start at
+`diagrams/overview.md`). When a change alters something one of them shows (the render path,
+the color wheel, the PR/MR segment, the cache tiers, the installer, CI or the security
+controls), update that diagram and its footer stamp in the same PR. Bump every footer's
+version on each release. The re-check table and the GitHub Mermaid syntax rules are in
+`diagrams/README.md`. `diagrams/` is not in the npm `files` allowlist, so it never ships in
+the tarball.
 
 ## Testing
 
