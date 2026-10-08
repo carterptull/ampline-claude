@@ -57,29 +57,17 @@ The checks run in this order, and the first failure stops the chain.
 
 ```mermaid
 flowchart TB
-    a["1 typeof raw is string?"]
-    b["2 not empty?"]
-    c["3 at most 2048 chars?"]
-    d["4 only printable ASCII?<br/>no controls, space, DEL or non-ASCII"]
-    e["5 new URL parses?"]
-    f["6 protocol is https?"]
-    g["7 no username or password?"]
-    h["8 parsed href still<br/>under 2048 and printable ASCII?"]
-    ok["emit url.href, not the raw string"]
-    fail["return null<br/>the number still renders, no link"]
+    subgraph checks["safeLinkUrl checks, in order"]
+        direction TB
+        a["1 typeof raw is string?"] --> b["2 not empty?"] --> c["3 at most 2048 chars?"] --> d["4 only printable ASCII?<br/>no controls, space, DEL or non-ASCII"] --> e["5 new URL parses?"] --> f["6 protocol is https?"] --> g["7 no username or password?"] --> h["8 parsed href still under 2048<br/>and printable ASCII?"]
+    end
 
-    a --> b --> c --> d --> e --> f --> g --> h --> ok
-    a -.->|no| fail
-    b -.->|no| fail
-    c -.->|no| fail
-    d -.->|no| fail
-    e -.->|no| fail
-    f -.->|no| fail
-    g -.->|no| fail
-    h -.->|no| fail
+    h --> ok["emit url.href, not the raw string"]
+    checks -.->|"first failure stops the chain"| fail["return null<br/>the number still renders, no link"]
 
     style ok fill:transparent,stroke:#60C878
     style fail fill:transparent,stroke:#888
+    style checks fill:transparent,stroke:#888
 ```
 
 Steps 1 to 3 are one guard line in the code and steps 6 and 7 are one condition, but the order
