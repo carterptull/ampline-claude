@@ -83,7 +83,7 @@ flowchart LR
     style urgency fill:transparent,stroke:#888
 ```
 
-**Color means identity on the left and bold means urgency on the right.** The wheel carries no
+**The wheel is identity and the danger ramp is urgency.** The wheel carries no
 urgency signal. A red Opus is not a warning, it is just Opus. The only bold on the wheel is effort
 `max`, and only the effort word is bolded, not the model name. The danger ramp is the opposite:
 the colors are a green to red climb, and bold starts at 85 percent. A non-finite percentage
