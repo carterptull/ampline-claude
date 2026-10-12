@@ -365,6 +365,94 @@ function runPaceTests() {
 
 }
 
+// ---- Pace marker on the usage bar ------------------------------------------
+// A single `┃` replaces one of the 8 bar cells to show how much of the window
+// has elapsed. It is a glyph substitution on purpose: it is the only technique
+// that still reads when NO_COLOR removes every attribute (D32).
+function runBarMarkerTests() {
+  const { renderBar, BAR_WIDTH } = require('../lib/bar');
+  const { stripAnsi } = require('../lib/colors');
+  const MARK = '┃';
+  const cellsOf = (s) => {
+    const m = /([█░┃]+)$/.exec(stripAnsi(String(s)));
+    return m ? m[1] : '';
+  };
+  const check = (name, ok, detail) => {
+    if (ok) console.log(`  ok    bar marker: ${name}`);
+    else fail(`bar marker: ${name}`, detail);
+  };
+  const cells = (pct, opts) => cellsOf(renderBar('H', pct, opts));
+
+  check('no marker option leaves the bar unchanged', cells(80) === '██████░░', cells(80));
+  check('marker 0 lands in the first cell', cells(80, { marker: 0 }) === '┃█████░░', cells(80, { marker: 0 }));
+  check('marker 0.5 lands on a filled cell', cells(80, { marker: 0.5 }) === '████┃█░░', cells(80, { marker: 0.5 }));
+  check('marker on an empty cell', cells(20, { marker: 0.75 }) === '██░░░░┃░', cells(20, { marker: 0.75 }));
+  check('marker 0.999 lands in the last cell', cells(80, { marker: 0.999 }) === '██████░┃', cells(80, { marker: 0.999 }));
+  check('marker 1 is clamped into the last cell', cells(80, { marker: 1 }) === '██████░┃', cells(80, { marker: 1 }));
+
+  // Non-integer products pin floor() against round()/ceil(): 0.3*8 = 2.4 and 0.7*8 = 5.6.
+  check('marker 0.3 floors into cell 2', cells(0, { marker: 0.3 }) === '░░┃░░░░░', cells(0, { marker: 0.3 }));
+  check('marker 0.7 floors into cell 5', cells(0, { marker: 0.7 }) === '░░░░░┃░░', cells(0, { marker: 0.7 }));
+  check('marker 0.124 stays in cell 0 (just under 1/8)', cells(0, { marker: 0.124 }) === '┃░░░░░░░', cells(0, { marker: 0.124 }));
+  check('marker 0.125 steps into cell 1', cells(0, { marker: 0.125 }) === '░┃░░░░░░', cells(0, { marker: 0.125 }));
+
+  // The marker must carry no styling of its own ("color = identity, bold = urgency"): with
+  // colors on, the 8 cells are one contiguous run ending in the single closing reset.
+  const colorChild = spawnSync(process.execPath, ['-e',
+    "const {renderBar}=require(process.argv[1]);process.stdout.write(JSON.stringify([renderBar('H',60,{marker:0.5}),renderBar('H',97,{marker:0.5})]))",
+    path.join(ROOT, 'lib', 'bar.js')], {
+    encoding: 'utf8', timeout: 10000,
+    env: (() => { const e = { ...process.env }; delete e.NO_COLOR; return e; })(),
+  });
+  let colored = [];
+  try { colored = JSON.parse(colorChild.stdout || '[]'); } catch {}
+  check('colors-on output has escapes (the styling test is not vacuous)',
+    colored.length === 2 && colored.every((s) => /\x1b\[/.test(s)), JSON.stringify(colored));
+  check('marker adds no escape inside the bar run',
+    colored.length === 2 && colored.every((s) => /[█░┃]{8}\x1b\[0m$/.test(s) && s.includes(MARK)), JSON.stringify(colored));
+
+  // Width must never change, wherever the marker lands.
+  let widthOk = true;
+  let widthDetail = '';
+  for (let m = 0; m <= 1.0001; m += 0.05) {
+    const c = cells(55, { marker: Math.min(1, m) });
+    const marks = c.split(MARK).length - 1;
+    if (c.length !== BAR_WIDTH || marks !== 1) { widthOk = false; widthDetail = `marker=${m} -> "${c}"`; break; }
+  }
+  check('width stays 8 with exactly one marker across the range', widthOk, widthDetail);
+
+  check('the label and rounded number are untouched',
+    stripAnsi(renderBar('H', 80, { marker: 0.5 })).startsWith('H80 '), stripAnsi(renderBar('H', 80, { marker: 0.5 })));
+  check('an out-of-range fill still clamps with a marker', cells(250, { marker: 0.5 }) === '████┃███', cells(250, { marker: 0.5 }));
+
+  // Unknown or unusable values draw no marker rather than a wrong one.
+  for (const [label, marker] of [['NaN', NaN], ['negative', -0.1], ['above 1', 1.0001], ['Infinity', Infinity],
+    ['numeric string', '0.5'], ['null', null], ['undefined', undefined], ['object', {}], ['boolean', true]]) {
+    const c = cells(80, { marker });
+    check(`invalid marker (${label}) draws none`, c === '██████░░', c);
+  }
+
+  // The stale path drops urgency signals (D11); the marker compares quota to a live clock,
+  // so with a possibly-outdated quota it would mislead.
+  const stale = renderBar('H', 80, { stale: true, marker: 0.5 });
+  check('stale bar draws no marker', cellsOf(stale) === '██████░░', cellsOf(stale));
+
+  // Danger styling (bold, warn glyph) is unaffected and the marker still shows.
+  const hot = stripAnsi(renderBar('W', 97, { marker: 0.5 }));
+  check('marker coexists with the 95%+ warn styling', hot.includes('⚠') && hot.includes('W97 ') && hot.includes(MARK), hot);
+
+  check('a non-finite fill still yields null', renderBar('H', NaN, { marker: 0.5 }) === null, 'expected null');
+
+  // NO_COLOR proof: a real child process with colors off must still show the marker, with no escapes.
+  const child = spawnSync(process.execPath, ['-e',
+    "const {renderBar}=require(process.argv[1]);process.stdout.write(renderBar('H',97,{marker:0.5}))",
+    path.join(ROOT, 'lib', 'bar.js')], {
+    encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' }, timeout: 10000,
+  });
+  const out = child.stdout || '';
+  check('marker still shows with NO_COLOR and emits no escapes', out.includes(MARK) && !/\x1b/.test(out), JSON.stringify(out));
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -377,6 +465,7 @@ function main() {
   runHaikuTests();
   runPrTests();
   runPaceTests();
+  runBarMarkerTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();
