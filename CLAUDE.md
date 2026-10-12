@@ -106,6 +106,7 @@ lib/cache.js     read(key) -> {age, value} | null · write(key, value)
 
 lib/usage.js     resolveUsage(input) -> {fiveHour, weekly, stale} | null   <- SYNCHRONOUS
                  formatCountdown(resetsAtMs) -> string
+                 elapsedFraction(resetsAtMs, windowMs, now?) -> number | null   <- 0..1, null = unknown
 
 lib/layout.js    layout(line1Parts, line2Parts, separator) -> string
                  visibleWidth(str) -> number · SEGMENT_SEP

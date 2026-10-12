@@ -305,6 +305,66 @@ function runPrTests() {
     (home) => fs.writeFileSync(path.join(home, '.amplinerc.json'), JSON.stringify({ color: false }) + '\n', 'utf8'));
 }
 
+// ---- Pace: how much of a rate-limit window has elapsed ---------------------
+// Every fixture's resets_at is already in the past, so none of them can exercise
+// this. The helper takes an injectable `now`, which makes the math exact here
+// instead of "roughly mid-window" through a spawned binary.
+function runPaceTests() {
+  const { elapsedFraction } = require('../lib/usage');
+  if (typeof elapsedFraction !== 'function') {
+    return fail('elapsedFraction', 'lib/usage.js does not export elapsedFraction');
+  }
+
+  const HOUR = 60 * 60 * 1000;
+  const FIVE_H = 5 * HOUR;
+  const SEVEN_D = 7 * 24 * HOUR;
+  const NOW = 1_800_000_000_000; // fixed instant; the helper never reads the clock when given one
+
+  const cases = [
+    ['window just started',            NOW + FIVE_H,         FIVE_H, 0],
+    ['halfway through the 5h window',  NOW + FIVE_H / 2,     FIVE_H, 0.5],
+    ['one fifth through',              NOW + FIVE_H * 0.8,   FIVE_H, 0.2],
+    ['one minute before reset',        NOW + 60000,          FIVE_H, 1 - 60000 / FIVE_H],
+    ['halfway through the weekly',     NOW + SEVEN_D / 2,    SEVEN_D, 0.5],
+    ['5h remaining is early in weekly', NOW + FIVE_H,        SEVEN_D, 1 - FIVE_H / SEVEN_D],
+    // The helper has no way to know which window a value belongs to, so it only
+    // checks the value against the window it was given.
+    ['reset exactly now',              NOW,                  FIVE_H, null],
+    ['reset already past',             NOW - 1000,           FIVE_H, null],
+    ['reset farther out than window',  NOW + FIVE_H + 1000,  FIVE_H, null],
+    ['resetsAtMs null',                null,                 FIVE_H, null],
+    ['resetsAtMs undefined',           undefined,            FIVE_H, null],
+    ['resetsAtMs NaN',                 NaN,                  FIVE_H, null],
+    ['resetsAtMs Infinity',            Infinity,             FIVE_H, null],
+    ['resetsAtMs is a string',         String(NOW + HOUR),   FIVE_H, null],
+    ['windowMs zero',                  NOW + HOUR,           0, null],
+    ['windowMs negative',              NOW + HOUR,           -FIVE_H, null],
+    ['windowMs NaN',                   NOW + HOUR,           NaN, null],
+    ['windowMs Infinity',              NOW + HOUR,           Infinity, null],
+    ['windowMs undefined',             NOW + HOUR,           undefined, null],
+  ];
+
+  for (const [name, resetsAtMs, windowMs, want] of cases) {
+    const got = elapsedFraction(resetsAtMs, windowMs, NOW);
+    const ok = want === null ? got === null : (typeof got === 'number' && Math.abs(got - want) < 1e-9);
+    if (ok) console.log(`  ok    elapsedFraction: ${name}`);
+    else fail(`elapsedFraction: ${name}`, `expected ${want}, got ${got}`);
+  }
+
+  // Without an injected `now` it reads the real clock.
+  const live = elapsedFraction(Date.now() + FIVE_H / 2, FIVE_H);
+  if (typeof live === 'number' && Math.abs(live - 0.5) < 0.01) console.log('  ok    elapsedFraction: defaults to the real clock');
+  else fail('elapsedFraction: defaults to the real clock', `expected ~0.5, got ${live}`);
+
+  // A bad clock value must degrade to "unknown", never to NaN in the bar.
+  for (const badNow of [NaN, Infinity, 'soon']) {
+    const v = elapsedFraction(NOW + HOUR, FIVE_H, badNow);
+    if (v === null) console.log(`  ok    elapsedFraction: unusable now (${String(badNow)}) gives null`);
+    else fail(`elapsedFraction: unusable now (${String(badNow)})`, `expected null, got ${v}`);
+  }
+
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -316,6 +376,7 @@ function main() {
 
   runHaikuTests();
   runPrTests();
+  runPaceTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();
