@@ -453,6 +453,70 @@ function runBarMarkerTests() {
   check('marker still shows with NO_COLOR and emits no escapes', out.includes(MARK) && !/\x1b/.test(out), JSON.stringify(out));
 }
 
+// ---- Pace marker wired into the 5-hour and weekly segments -----------------
+// resets_at in every fixture is in the past, so these build reset times from the
+// real clock. Offsets sit mid-cell so the few milliseconds a run takes can never
+// push a marker across a boundary.
+function runPaceMarkerWiringTests() {
+  const { renderFiveHourSegment, renderWeeklySegment } = require('../lib/segments/rateLimits');
+  const { stripAnsi } = require('../lib/colors');
+  const HOUR = 60 * 60 * 1000;
+  const MARK = '┃';
+  const barOf = (s) => { const m = /([█░┃]{8})/.exec(stripAnsi(String(s))); return m ? m[1] : ''; };
+  const markAt = (s) => barOf(s).indexOf(MARK);
+  const check = (name, ok, detail) => {
+    if (ok) console.log(`  ok    pace marker wiring: ${name}`);
+    else fail(`pace marker wiring: ${name}`, detail);
+  };
+  const ctx = (entry, extra) => ({ usage: { fiveHour: entry, weekly: entry, stale: false, ...extra } });
+  const entry = (percentage, remainingMs) => ({ percentage, resetsAtMs: remainingMs == null ? null : Date.now() + remainingMs });
+
+  // 5h window, 2.1875h left => 0.5625 elapsed => 4.5 cells => cell 4.
+  const mid = renderFiveHourSegment(ctx(entry(40, 2.1875 * HOUR)));
+  check('5h bar shows the marker at the elapsed position', markAt(mid) === 4, JSON.stringify(stripAnsi(mid)));
+  check('5h bar keeps width 8 and exactly one marker', barOf(mid).length === 8 && barOf(mid).split(MARK).length === 2, barOf(mid));
+  check('countdown text is still shown', /↺ 2h/.test(stripAnsi(mid)), stripAnsi(mid));
+  check('the rounded percentage is unchanged', stripAnsi(mid).startsWith('H40 '), stripAnsi(mid));
+
+  // The same reset time means different things for different windows. 4.5h left is
+  // early in a 5h window (0.1 elapsed => cell 0) and nearly at the end of a 7d one
+  // (0.973 elapsed => cell 7).
+  const shared = entry(40, 4.5 * HOUR);
+  const h = renderFiveHourSegment({ usage: { fiveHour: shared, weekly: null, stale: false } });
+  const w = renderWeeklySegment({ usage: { fiveHour: null, weekly: shared, stale: false } });
+  check('5h window: 4.5h left is early (cell 0)', markAt(h) === 0, JSON.stringify(stripAnsi(h)));
+  check('weekly window: the same 4.5h left is late (cell 7)', markAt(w) === 7, JSON.stringify(stripAnsi(w)));
+  check('weekly label is W', stripAnsi(w).startsWith('W40 '), stripAnsi(w));
+
+  // No marker when the position cannot be known.
+  const none = (label, seg, e) => check(label, !seg.includes(MARK) && barOf(seg).length === 8, JSON.stringify(stripAnsi(seg)));
+  none('no marker without a reset time', renderFiveHourSegment(ctx(entry(40, null))));
+  none('no marker when the reset is already past', renderFiveHourSegment(ctx(entry(40, -HOUR))));
+  none('no marker when the reset is farther out than the window', renderFiveHourSegment(ctx(entry(40, 6 * HOUR))));
+  none('no marker on the stale (cached) path', renderFiveHourSegment(ctx(entry(40, 2.1875 * HOUR), { stale: true })));
+
+  // Degradation contract: a segment returns null instead of throwing.
+  check('a missing entry still renders nothing', renderFiveHourSegment({ usage: { fiveHour: null, weekly: null } }) === null, 'expected null');
+  check('a missing usage still renders nothing', renderFiveHourSegment({}) === null, 'expected null');
+
+  // Through the real binary, with colors on and off.
+  const nowS = Math.floor(Date.now() / 1000);
+  const payload = (extra) => inlinePayload({
+    model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' },
+    effort: { level: 'high' },
+    rate_limits: {
+      five_hour: { used_percentage: 40, resets_at: nowS + Math.round(2.1875 * 3600) },
+      seven_day: { used_percentage: 20, resets_at: nowS + Math.round(3.5 * 24 * 3600) },
+    },
+    ...extra,
+  });
+  runInline('binary: both bars carry a marker', payload(), { expect: [MARK], refute: ['NaN', 'undefined'] });
+  const res = spawnRender(JSON.stringify(payload()));
+  const markers = (res.stdout.match(/┃/g) || []).length;
+  check('binary: exactly two markers (5h and weekly)', markers === 2, `found ${markers} in ${JSON.stringify(stripAnsi(res.stdout))}`);
+  runInline('binary: marker survives NO_COLOR with no escapes', payload(), { expect: [MARK], refute: [ESC + '['] }, { NO_COLOR: '1' });
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -466,6 +530,7 @@ function main() {
   runPrTests();
   runPaceTests();
   runBarMarkerTests();
+  runPaceMarkerWiringTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();
