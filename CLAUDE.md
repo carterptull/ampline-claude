@@ -51,6 +51,7 @@ lib/
   colors.js                The wheel, the danger ramp, NO_COLOR, ANSI stripping, control-char
                             sanitization. Frozen interface.
   bar.js                   Block-bar renderer shared by context/fiveHour/weekly. BAR_WIDTH = 8.
+                            Optional pace marker (┃) for the usage bars; glyph-only so it survives NO_COLOR.
   cache.js                 Two-tier fresh/stale file cache. Handles the Windows ':' filename bug
                             and atomic writes (two processes — main + subagent — can race).
   usage.js                 stdin rate_limits -> write-through cache -> resolveUsage(). Synchronous.
@@ -98,7 +99,9 @@ lib/colors.js    fg(r,g,b) · RESET · BOLD · DIM · EFFORT_ORDER · WHEEL
 
 lib/claudeDir.js claudeDir() -> string   <- CLAUDE_CONFIG_DIR override or ~/.claude
 
-lib/bar.js       renderBar(label, usedPct, opts) -> string | null   opts: {stale}
+lib/bar.js       renderBar(label, usedPct, opts) -> string | null   opts: {stale, marker}
+                 marker = elapsed fraction 0..1; one cell becomes ┃, width stays 8;
+                 ignored when stale or not a finite number in 0..1
                  BAR_WIDTH
 
 lib/cache.js     read(key) -> {age, value} | null · write(key, value)
