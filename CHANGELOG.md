@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Copyright is now held by Paymon Software.** The license is still MIT and its terms are
+  unchanged; only the copyright holder named in `LICENSE` and the README footer differ.
+
 ## [0.6.0] - 2026-10-07
 
 ### Added

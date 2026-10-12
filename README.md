@@ -326,4 +326,4 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
 
 ---
 
-© 2026 Carter Tull · MIT
+© 2026 Paymon Software · MIT
