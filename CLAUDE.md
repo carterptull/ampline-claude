@@ -99,9 +99,10 @@ lib/colors.js    fg(r,g,b) · RESET · BOLD · DIM · EFFORT_ORDER · WHEEL
 
 lib/claudeDir.js claudeDir() -> string   <- CLAUDE_CONFIG_DIR override or ~/.claude
 
-lib/bar.js       renderBar(label, usedPct, opts) -> string | null   opts: {stale, marker}
+lib/bar.js       renderBar(label, usedPct, opts) -> string | null   opts: {stale, marker, rampPct}
                  marker = elapsed fraction 0..1; one cell becomes ┃, width stays 8;
-                 ignored when stale or not a finite number in 0..1
+                 ignored when stale or not a finite number in 0..1.
+                 rampPct = percentage the danger ramp is read at; can only RAISE urgency
                  BAR_WIDTH
 
 lib/cache.js     read(key) -> {age, value} | null · write(key, value)
@@ -110,6 +111,8 @@ lib/cache.js     read(key) -> {age, value} | null · write(key, value)
 lib/usage.js     resolveUsage(input) -> {fiveHour, weekly, stale} | null   <- SYNCHRONOUS
                  formatCountdown(resetsAtMs) -> string
                  elapsedFraction(resetsAtMs, windowMs, now?) -> number | null   <- 0..1, null = unknown
+                 paceRampPct(percentUsed, fraction) -> number | null        <- null = use the real pct
+                 PACE_DEADBAND (0.1) · PACE_CAP (84)
 
 lib/layout.js    layout(line1Parts, line2Parts, separator) -> string
                  visibleWidth(str) -> number · SEGMENT_SEP

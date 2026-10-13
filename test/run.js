@@ -517,6 +517,149 @@ function runPaceMarkerWiringTests() {
   runInline('binary: marker survives NO_COLOR with no escapes', payload(), { expect: [MARK], refute: [ESC + '['] }, { NO_COLOR: '1' });
 }
 
+// ---- Pace-aware coloring (opt-in `paceColors`) ------------------------------
+// Pace can only ESCALATE a bar, because quota consumed never decreases inside a
+// window: projected end-of-window use is always >= current use. It is capped
+// below the bold/warn thresholds so only real consumption shouts.
+function runPaceColorTests() {
+  const { paceRampPct, PACE_DEADBAND, PACE_CAP } = require('../lib/usage');
+  const check = (name, ok, detail) => {
+    if (ok) console.log(`  ok    pace colors: ${name}`);
+    else fail(`pace colors: ${name}`, detail);
+  };
+  if (typeof paceRampPct !== 'function') return fail('pace colors', 'lib/usage.js does not export paceRampPct');
+
+  const near = (a, b) => typeof a === 'number' && Math.abs(a - b) < 1e-9;
+  check('exposes the deadband and cap', PACE_DEADBAND === 0.1 && PACE_CAP === 84, `${PACE_DEADBAND} / ${PACE_CAP}`);
+  check('burning fast raises a calm bar to the cap (40% used, 20% elapsed)', paceRampPct(40, 0.2) === 84, String(paceRampPct(40, 0.2)));
+  check('moderate pace projects honestly (10% used, 50% elapsed -> 20)', near(paceRampPct(10, 0.5), 20), String(paceRampPct(10, 0.5)));
+  check('near the end it matches absolute (80% used, 97% elapsed)', near(paceRampPct(80, 0.97), 80 / 0.97), String(paceRampPct(80, 0.97)));
+  check('never lowers real consumption (90% used stays 90)', paceRampPct(90, 0.5) === 90, String(paceRampPct(90, 0.5)));
+  check('the deadband boundary itself applies', paceRampPct(40, 0.1) === 84, String(paceRampPct(40, 0.1)));
+  check('below the deadband falls back to absolute (null)', paceRampPct(40, 0.09) === null, String(paceRampPct(40, 0.09)));
+  check('zero used stays zero', paceRampPct(0, 0.5) === 0, String(paceRampPct(0, 0.5)));
+  for (const [label, p, f] of [['NaN percent', NaN, 0.5], ['null fraction', 40, null], ['NaN fraction', 40, NaN],
+    ['fraction above 1', 40, 1.2], ['string fraction', 40, '0.5'], ['zero fraction', 40, 0], ['negative fraction', 40, -0.2]]) {
+    check(`unusable input (${label}) gives null`, paceRampPct(p, f) === null, String(paceRampPct(p, f)));
+  }
+
+  // Property: never below the real percentage, never above max(real, cap).
+  let prop = true;
+  let propDetail = '';
+  for (let p = 0; p <= 100 && prop; p += 2.5) {
+    for (let f = 0.1; f <= 1.0001 && prop; f += 0.05) {
+      const v = paceRampPct(p, Math.min(1, f));
+      if (!(v >= p && v <= Math.max(p, PACE_CAP))) { prop = false; propDetail = `pct=${p} f=${f} -> ${v}`; }
+    }
+  }
+  check('result is always within [pct, max(pct, cap)]', prop, propDetail);
+
+  // renderBar: rampPct changes only the color the ramp is read at.
+  const child = (expr) => {
+    const env = { ...process.env };
+    delete env.NO_COLOR;
+    const r = spawnSync(process.execPath, ['-e',
+      `const B=require(process.argv[1]+'/lib/bar.js');process.stdout.write(JSON.stringify(${expr}))`, ROOT],
+    { encoding: 'utf8', env, timeout: 10000 });
+    try { return JSON.parse(r.stdout); } catch { return null; }
+  };
+  const GREEN = sgr([96, 200, 120]);
+  const ORANGE = sgr([239, 159, 39]);
+  const RED = sgr([232, 67, 61]);
+  const BOLDSEQ = ESC + '[1m';
+  const out = child(`[B.renderBar('H',40,{}), B.renderBar('H',40,{rampPct:84}), B.renderBar('H',40,{rampPct:30}),
+    B.renderBar('H',90,{rampPct:84}), B.renderBar('H',40,{rampPct:NaN}), B.renderBar('H',40,{rampPct:'84'}),
+    B.renderBar('H',40,{rampPct:null}), B.renderBar('H',40,{stale:true,rampPct:84}), B.renderBar('H',40,{rampPct:1000})]`);
+  if (!out || out.length !== 9) return fail('pace colors: renderBar child', JSON.stringify(out));
+  const [plain, raised, lower, absolute, nan, str, nul, stale, huge] = out;
+  const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+  check('baseline 40% is green', plain.startsWith(GREEN), JSON.stringify(plain));
+  check('rampPct 84 reads orange', raised.startsWith(ORANGE + 'H40 '), JSON.stringify(raised));
+  check('raised bar is not bold and has no warn glyph', !raised.includes(BOLDSEQ) && !raised.includes('⚠'), JSON.stringify(raised));
+  check('rampPct below the real value never lowers it', lower.startsWith(GREEN), JSON.stringify(lower));
+  check('real 90% stays bold red despite a lower rampPct', absolute.startsWith(BOLDSEQ + RED), JSON.stringify(absolute));
+  check('NaN, string and null rampPct are ignored', [nan, str, nul].every((s) => s.startsWith(GREEN)), JSON.stringify([nan, str, nul]));
+  check('stale bars ignore rampPct', !stale.includes(ORANGE) && stale.startsWith(ESC + '[2m'), JSON.stringify(stale));
+  check('an oversized rampPct simply reads as the top step', huge.includes('⚠'), JSON.stringify(huge));
+  check('the number and fill are unchanged by rampPct', strip(raised) === strip(plain), `${strip(raised)} vs ${strip(plain)}`);
+
+  // Config: a plain boolean, default off, bad values corrected silently.
+  const { validateAndMerge, DEFAULT_CONFIG } = require('../lib/config');
+  check('paceColors defaults to false', DEFAULT_CONFIG.paceColors === false, String(DEFAULT_CONFIG.paceColors));
+  check('paceColors true is kept', validateAndMerge({ paceColors: true }).paceColors === true, 'expected true');
+  for (const bad of ['yes', 1, null, {}, []]) {
+    check(`paceColors ${JSON.stringify(bad)} falls back to false`, validateAndMerge({ paceColors: bad }).paceColors === false, 'expected false');
+  }
+
+  // Through the real binary, 50% used with 20% of the 5h window elapsed.
+  const nowS = Math.floor(Date.now() / 1000);
+  const paced = (usedPct, remainingH) => inlinePayload({
+    model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' },
+    effort: { level: 'high' },
+    rate_limits: { five_hour: { used_percentage: usedPct, resets_at: nowS + Math.round(remainingH * 3600) } },
+  });
+  const withPace = (home) => fs.writeFileSync(path.join(home, '.amplinerc.json'), JSON.stringify({ paceColors: true }) + '\n', 'utf8');
+  runInline('binary: paceColors on raises a fast-burning 40% bar to orange', paced(40, 4),
+    { expect: [ORANGE + 'H40 '], refute: ['NaN', 'undefined', BOLDSEQ + ORANGE] }, {}, withPace);
+  runInline('binary: paceColors off leaves the same 40% bar green', paced(40, 4),
+    { expect: [GREEN + 'H40 '], refute: [ORANGE + 'H40 '] });
+  runInline('binary: inside the deadband it stays on the absolute ramp', paced(40, 4.75),
+    { expect: [GREEN + 'H40 '], refute: [ORANGE + 'H40 '] }, {}, withPace);
+  runInline('binary: pace never lowers a real 90%', paced(90, 2.5),
+    { expect: [BOLDSEQ + RED], refute: ['NaN'] }, {}, withPace);
+  runInline('binary: paceColors keeps the marker and width', paced(40, 4),
+    { expect: ['┃', ORANGE + 'H40 '] }, {}, withPace);
+
+  // The weekly bar is wired separately from the 5-hour one (it has its own window).
+  // 40% used with 20% of the 7-day window gone is the same fast-burn shape.
+  const weeklyOnly = (usedPct, remainingDays) => inlinePayload({
+    model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' },
+    effort: { level: 'high' },
+    rate_limits: { seven_day: { used_percentage: usedPct, resets_at: nowS + Math.round(remainingDays * 86400) } },
+  });
+  runInline('binary: paceColors raises a fast-burning weekly bar to orange', weeklyOnly(40, 5.6),
+    { expect: [ORANGE + 'W40 '], refute: [BOLDSEQ + ORANGE, 'NaN'] }, {}, withPace);
+  runInline('binary: weekly stays on the absolute ramp with paceColors off', weeklyOnly(40, 5.6),
+    { expect: [GREEN + 'W40 '], refute: [ORANGE + 'W40 '] });
+
+  // Pins the real-percentage boundary: color must follow the UNROUNDED value, so a real
+  // 84.6 with a pace value of 84 stays orange rather than rounding to 85 and turning bold red.
+  const edge = child(`[B.renderBar('H',84.6,{rampPct:84}), B.renderBar('H',84.6,{})]`);
+  check('real 84.6 with pace stays orange, not bold', Array.isArray(edge) && edge.every((s) => s.startsWith(ORANGE) && !s.includes(BOLDSEQ)), JSON.stringify(edge));
+
+  // A segment handed config that never went through validateAndMerge must still
+  // only act on a literal `true`.
+  const segChild = (config) => {
+    const env = { ...process.env };
+    delete env.NO_COLOR;
+    const reset = Date.now() + 4 * 60 * 60 * 1000;
+    const r = spawnSync(process.execPath, ['-e',
+      `const S=require(process.argv[1]+'/lib/segments/rateLimits.js');
+       process.stdout.write(JSON.stringify(S.renderFiveHourSegment({usage:{fiveHour:{percentage:40,resetsAtMs:${reset}},weekly:null,stale:false},config:${JSON.stringify(config)}})))`, ROOT],
+    { encoding: 'utf8', env, timeout: 10000 });
+    try { return JSON.parse(r.stdout); } catch { return null; }
+  };
+  check('segment given paceColors: true uses pace', String(segChild({ paceColors: true })).startsWith(ORANGE), JSON.stringify(segChild({ paceColors: true })));
+  for (const loose of ['yes', 1, 'true', {}]) {
+    const seg = segChild({ paceColors: loose });
+    check(`segment given non-boolean paceColors ${JSON.stringify(loose)} ignores pace`, String(seg).startsWith(GREEN), JSON.stringify(seg));
+  }
+  check('segment with no config ignores pace', String(segChild(undefined)).startsWith(GREEN), JSON.stringify(segChild(undefined)));
+
+  // End to end: usage that came from the cache is stale, so neither pace color nor
+  // the marker may appear even with paceColors on.
+  const seedCache = (home) => {
+    withPace(home);
+    const dir = path.join(home, '.claude', 'cache', 'ampline');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'usage.json'),
+      JSON.stringify({ fiveHour: { percentage: 40, resetsAtMs: Date.now() + 4 * 3600 * 1000 }, weekly: null }), 'utf8');
+  };
+  runInline('binary: cached (stale) usage ignores pace color and marker even with paceColors on',
+    inlinePayload({ model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' }, effort: { level: 'high' } }),
+    { expect: [ESC + '[2mH40 '], refute: [ORANGE, '┃', 'NaN', 'undefined'] }, {}, seedCache);
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -531,6 +674,7 @@ function main() {
   runPaceTests();
   runBarMarkerTests();
   runPaceMarkerWiringTests();
+  runPaceColorTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();

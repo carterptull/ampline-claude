@@ -6,6 +6,7 @@
   "line2From": "fiveHour",
   "separator": " │ ",
   "color": true,
+  "paceColors": false,
   "maxBranchLength": 24,
   "maxTaskLength": 40
 }
