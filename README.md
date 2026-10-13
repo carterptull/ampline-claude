@@ -178,6 +178,7 @@ then your home directory. Files don't merge together.
   "line2From": "fiveHour",
   "separator": " │ ",
   "color": true,
+  "paceColors": false,
   "maxBranchLength": 24,
   "maxTaskLength": 40
 }
@@ -189,6 +190,7 @@ then your home directory. Files don't merge together.
 | `line2From` | string | `"fiveHour"` | the segment where line 2 begins when wrapping |
 | `separator` | string | `" │ "` | rendered between segments |
 | `color` | boolean | `true` | `false` strips all ANSI from the output |
+| `paceColors` | boolean | `false` | color the 5-hour and weekly bars by where your pace is heading, not only where it is now. It is a straight-line projection from elapsed time, so it does not apply in the first 10% of a window, and it assumes a 5-hour and a 7-day window. It can raise a bar to orange early but never lowers one and never reaches bold or `⚠`. |
 | `maxBranchLength` | number | `24` | branch name truncation |
 | `maxTaskLength` | number | `40` | task text truncation |
 
