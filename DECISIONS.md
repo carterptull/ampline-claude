@@ -792,13 +792,22 @@ sits in one of them, the two can only be compared to about one cell, an eighth o
 
 **What is verified and what is not (2026-10-13).** The fixture suite, in-process unit tests of
 the math with an injected clock, a mutation matrix over the window constants and the stale
-path, and an independent review of the bar change pass. Glyph and font coverage were measured on one Windows 10 machine by a script that is not kept
-in the repo.
-**Not yet verified:** a live Claude Code session on Windows Terminal, WSL, or macOS Terminal.app
-and iTerm2 (no Mac has been available), and that `resets_at` at the start of a real window is
-exactly 5 hours out. This entry is to be amended after that check.
+path, and an independent review of the bar change pass. Glyph and font coverage were measured
+on one Windows 10 machine by a script that is not kept in the repo. The real binary, run on
+Windows 10 with Node 24.21.0, puts the marker in the expected cell at eight positions across a
+5-hour window (a throwaway sweep script, also not kept). Hardening tests cover `"color": false`,
+reset times given as epoch seconds, milliseconds, ISO text and a numeric string, layout parity
+(the marker changes neither line width nor the wrap decision at 200, 120 and 80 columns), and a
+seeded fuzz of 4000 hostile segment inputs. Each of those guards fails the suite under a
+targeted mutation.
 
-### D40. `paceColors`: the ramp can be read at projected pace, escalate-only and capped at orange
+**Not yet verified:** how it looks in a live Claude Code session in a real terminal (Windows
+Terminal, and macOS Terminal.app and iTerm2, where no Mac has been available), and that
+`resets_at` at the start of a real window is exactly 5 hours out. WSL here has only Node 16,
+below the `engines` floor of 24, so it was not run; Linux on Node 24 is covered by CI. This
+entry is to be amended after the live check.
+
+### D40. `paceColors`: the ramp can be read at projected pace, never calmer than the plain ramp and capped at orange
 
 The marker (D39) shows pace but leaves the color on current use. 40% used with a fifth of the
 window gone is on course to run out and shows a calm green. The danger ramp could be read at

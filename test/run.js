@@ -660,6 +660,112 @@ function runPaceColorTests() {
     { expect: [ESC + '[2mH40 '], refute: [ORANGE, '┃', 'NaN', 'undefined'] }, {}, seedCache);
 }
 
+// ---- Pace hardening: integration seams and hostile input ---------------------
+// The unit and wiring tests pin the math. These pin the seams around it: the other
+// ways Claude Code can spell a reset time, the config path that strips ANSI after
+// the fact, layout, and a seeded fuzz of the segment's own inputs.
+function runPaceHardeningTests() {
+  const { visibleWidth } = require('../lib/layout');
+  const { stripAnsi } = require('../lib/colors');
+  const { renderFiveHourSegment, renderWeeklySegment } = require('../lib/segments/rateLimits');
+  const check = (name, ok, detail) => {
+    if (ok) console.log(`  ok    pace hardening: ${name}`);
+    else fail(`pace hardening: ${name}`, detail);
+  };
+  const MARK = '┃';
+  const H = 60 * 60 * 1000;
+  const mk = (resetsAt, used = 40) => inlinePayload({
+    model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' },
+    effort: { level: 'high' },
+    rate_limits: { five_hour: { used_percentage: used, resets_at: resetsAt } },
+  });
+
+  // `"color": false` strips ANSI after rendering, so a glyph marker must survive it
+  // while every escape goes.
+  const colorOff = (home) => fs.writeFileSync(path.join(home, '.amplinerc.json'),
+    JSON.stringify({ color: false, paceColors: true }) + '\n', 'utf8');
+  runInline('binary: marker survives "color": false with no escapes',
+    mk(Math.floor((Date.now() + 2.1875 * H) / 1000)),
+    { expect: [MARK], refute: [ESC + '[', 'NaN', 'undefined'] }, {}, colorOff);
+
+  // Claude Code documents epoch seconds; the repo also accepts milliseconds and ISO text
+  // (toMs). The marker must work for every spelling that gets a countdown.
+  const target = Date.now() + 2.1875 * H;
+  runInline('binary: resets_at as epoch milliseconds still draws the marker',
+    mk(Math.round(target)), { expect: [MARK, '↺'], refute: ['NaN'] });
+  runInline('binary: resets_at as an ISO string still draws the marker',
+    mk(new Date(target).toISOString()), { expect: [MARK, '↺'], refute: ['NaN'] });
+  runInline('binary: resets_at as a numeric string still draws the marker',
+    mk(String(Math.floor(target / 1000))), { expect: [MARK, '↺'], refute: ['NaN'] });
+  runInline('binary: unparseable resets_at draws no marker and does not crash',
+    mk('next tuesday'), { refute: [MARK, 'NaN', 'undefined'] });
+
+  // The marker replaces a cell, so it must not change line width or the wrap decision.
+  // Same payload shape, one reset inside the 5h window (marker) and one beyond it (none).
+  const widthOf = (resetsAt, columns) => {
+    const r = spawnRender(JSON.stringify(mk(resetsAt)), { env: { NO_COLOR: '1', COLUMNS: String(columns) } });
+    const lines = (r.stdout || '').replace(/\n$/, '').split('\n');
+    return { lines: lines.length, widths: lines.map((l) => visibleWidth(l)), hasMark: (r.stdout || '').includes(MARK) };
+  };
+  const nowS = Math.floor(Date.now() / 1000);
+  for (const columns of [200, 120, 80]) {
+    const withMark = widthOf(nowS + Math.round(2.1875 * 3600), columns);
+    const without = widthOf(nowS + 6 * 3600, columns);
+    check(`marker present only inside the window (COLUMNS=${columns})`, withMark.hasMark && !without.hasMark,
+      JSON.stringify({ withMark, without }));
+    check(`marker changes neither width nor line count (COLUMNS=${columns})`,
+      withMark.lines === without.lines && JSON.stringify(withMark.widths) === JSON.stringify(without.widths),
+      JSON.stringify({ withMark, without }));
+  }
+
+  // Seeded fuzz of everything the segment is handed. Output must be null or a clean
+  // string with exactly one 8-cell bar and at most one marker.
+  let seed = 0x9e3779b9;
+  const rand = () => { // mulberry32
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pick = (a) => a[Math.floor(rand() * a.length)];
+  const now = Date.now();
+  const pcts = [0, 0.4, 7.5, 50, 84.6, 99.5, 100, 150, -5, -0, NaN, Infinity, '40', null, undefined, {}, [], true, 1e308];
+  const resets = [null, undefined, NaN, Infinity, -Infinity, 0, -1, now - H, now + 1000, now + H, now + 2.1875 * H,
+    now + 2.5 * H, now + 3 * H, now + 4 * H, now + 5 * H, now + 6 * H, now + 7 * 24 * H, now + 3.5 * 24 * H,
+    now + 100 * 24 * H, 1e308, '123', {}, [], true];
+  // Weighted toward well-formed entries and live (non-stale) usage, so the interesting
+  // marker paths are reached often; the hostile shapes still appear in every run.
+  const entries = (p, r) => (rand() < 0.6
+    ? { percentage: p, resetsAtMs: r }
+    : pick([null, undefined, 5, 'x', {}, [], { percentage: p }, { resetsAtMs: r }]));
+  const stales = [false, false, false, false, undefined, true, 'yes', 0, 1, null];
+  const configs = [undefined, null, {}, { paceColors: true }, { paceColors: false }, { paceColors: 'yes' }, 'x', 5, []];
+  let bad = '';
+  let produced = 0;
+  let marked = 0;
+  for (let i = 0; i < 4000 && !bad; i++) {
+    const p = pick(pcts), r = pick(resets);
+    const ctx = { usage: { fiveHour: entries(p, r), weekly: entries(p, r), stale: pick(stales) }, config: pick(configs) };
+    for (const fn of [renderFiveHourSegment, renderWeeklySegment]) {
+      let out;
+      try { out = fn(ctx); } catch (e) { bad = `threw: ${e.message} for ${JSON.stringify(ctx)}`; break; }
+      if (out === null) continue;
+      if (typeof out !== 'string') { bad = `non-string ${typeof out}`; break; }
+      const plain = stripAnsi(out);
+      produced++;
+      if (/NaN|undefined|Infinity|\[object/.test(plain)) { bad = `junk in ${JSON.stringify(plain)} for ${JSON.stringify(ctx)}`; break; }
+      const bars = plain.match(/[█░┃]{8}/g) || [];
+      if (bars.length !== 1 || !/[█░┃]/.test(bars[0]) || (bars[0].split(MARK).length - 1) > 1) {
+        bad = `bad bar in ${JSON.stringify(plain)} for ${JSON.stringify(ctx)}`; break;
+      }
+      if (plain.includes(MARK)) marked++;
+    }
+  }
+  check('fuzz: 4000 hostile inputs never produce junk, a wrong width, or two markers', !bad, bad);
+  check('fuzz: it actually exercised rendered bars and markers (not vacuous)', produced > 1000 && marked >= produced * 0.05,
+    `produced=${produced} marked=${marked}`);
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -675,6 +781,7 @@ function main() {
   runBarMarkerTests();
   runPaceMarkerWiringTests();
   runPaceColorTests();
+  runPaceHardeningTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();
