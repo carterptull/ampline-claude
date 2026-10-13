@@ -20,7 +20,9 @@ lines of ANSI-colored text to stdout. Installed via `npx ampline-claude --instal
 - **Color = identity, bold = urgency.** The 20-step model/effort wheel (`lib/colors.js`)
   carries no urgency signal — only `max` bolds, because it's inherently "pay attention."
   Usage bars (`lib/bar.js`) are the opposite: a separate green→red danger ramp, bold reserved
-  for the 85%+ threshold. Don't blend the two scales.
+  for the 85%+ threshold. Don't blend the two scales. Opt-in pace coloring feeds the same ramp
+  and is capped below the bold step, and the pace marker is a glyph, so neither adds a color
+  channel (D39, D40).
 - **Every segment returns `null` instead of throwing.** stdout is the product surface; a
   blank statusline is acceptable, a crashed one is not. Every `render*Segment(ctx)` function
   wraps its body in `try/catch` and returns `null` on any failure.
@@ -55,6 +57,7 @@ lib/
   cache.js                 Two-tier fresh/stale file cache. Handles the Windows ':' filename bug
                             and atomic writes (two processes — main + subagent — can race).
   usage.js                 stdin rate_limits -> write-through cache -> resolveUsage(). Synchronous.
+                            Also the window pace math: elapsedFraction, paceRampPct (D39, D40).
   config.js                .amplinerc.json loader: walk up from cwd, then home, first file wins.
   layout.js                One-line vs two-line wrapping, reading COLUMNS (falls back to
                             DEFAULT_COLUMNS when unset/non-numeric).
@@ -67,7 +70,7 @@ lib/
   segments/
     model.js                Model name + effort, wheel color.
     context.js               Context-window usage bar.
-    rateLimits.js             5-hour + weekly usage bars.
+    rateLimits.js             5-hour + weekly usage bars, with the pace marker and opt-in paceColors.
     git.js                     Branch (from .git/HEAD, no subprocess) + ahead/behind/dirty
                                (one cached `git status --porcelain=v2` call, run with
                                `-c core.fsmonitor=` and `--no-optional-locks` — a repo's own

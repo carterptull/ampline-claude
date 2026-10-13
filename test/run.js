@@ -518,9 +518,9 @@ function runPaceMarkerWiringTests() {
 }
 
 // ---- Pace-aware coloring (opt-in `paceColors`) ------------------------------
-// Pace can only ESCALATE a bar, because quota consumed never decreases inside a
-// window: projected end-of-window use is always >= current use. It is capped
-// below the bold/warn thresholds so only real consumption shouts.
+// Pace is never calmer than the plain ramp at the same moment: the elapsed fraction is
+// at most 1, so used/elapsed is never below used. It is capped below the bold/warn
+// thresholds so only real consumption shouts.
 function runPaceColorTests() {
   const { paceRampPct, PACE_DEADBAND, PACE_CAP } = require('../lib/usage');
   const check = (name, ok, detail) => {

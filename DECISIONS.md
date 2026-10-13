@@ -735,3 +735,120 @@ Confirming that a live Claude Code session actually sends `pr.kind: "mr"` for a 
 needs `glab` authenticated on a machine with a GitLab remote, and has not been done yet.
 GitHub's `gh`-based path is the one verified live (D12). D12's "`gh` required" is also now
 slightly narrower than the truth: Claude Code also accepts `GH_TOKEN` / `GITHUB_TOKEN`.
+
+## Phase 4 — v0.7.0: pace on the usage bars
+
+### D39. The usage bars carry a pace marker: one `┃` cell for how much of the window has elapsed
+
+A usage bar answers "how much have I spent". It cannot answer "is that a lot, for this far into
+the window". 80% used with ten minutes left is fine, and 50% used with a fifth of the window
+gone is not, and a bar that shows only the fill reads both the same. The payload already carries
+`resets_at`, so the elapsed fraction of the window is computable with no new data source.
+
+**Decision:** `renderBar` takes an optional `opts.marker`, the elapsed fraction 0 to 1. One of
+the eight cells is replaced by `┃` (U+2503) at `min(7, floor(marker * 8))`. A fill head ahead of
+the marker means quota is being spent faster than the clock. The width stays exactly 8
+(`BAR_WIDTH`, D10), and the number beside the bar stays the exact, rounded percentage.
+`elapsedFraction(resetsAtMs, windowMs, now?)` in `lib/usage.js` returns that fraction, or `null`
+when the reset time is missing, already past, or farther out than the window is long. `null`
+draws no marker.
+
+**Why a glyph and not a color.** `NO_COLOR` empties `fg`, `BOLD`, `DIM` and `RESET` (D32), and
+inverse video is an SGR attribute so it goes the same way. Recoloring one cell would also
+need a second color channel on a bar that already uses its one color for urgency. A substituted
+glyph is the only technique that still reads with no color at all, and it adds no color or bold
+of its own, so "color = identity, bold = urgency" is untouched. It is tested with colors on
+(no escape sequence inside the bar run) and with `NO_COLOR` in a real child process.
+
+**Why `┃`.** A full-height heavy line reads as a pole between solid `█` cells and stands out
+against the `░` texture, so it is legible on both filled and empty cells. It is East Asian
+Ambiguous width, the same class as the `█` and `│` the line already uses, so it adds no new
+width risk. Measured on one Windows 10 machine with Windows Terminal's Cascadia Mono, Consolas
+and Lucida Console: `┃` is present in Cascadia Mono and Consolas, and Windows Terminal draws
+U+2500 to U+259F itself regardless of font.
+
+**Rejected:**
+- *A contrasting foreground on one cell.* Invisible without color, and weak against `░`.
+- *Inverse video.* Dropped with the other SGR attributes under `NO_COLOR`, and a solid inverted
+  `░` reads as "filled".
+- *The thin glyphs `▏ ▎ ▕`.* They hug a cell edge so they read as a boundary, and Consolas and
+  Lucida Console lack them.
+- *Widening the bar by one cell for the marker.* `BAR_WIDTH` is settled (D10), and the line
+  already wraps at 120 columns when every segment is present.
+
+**The window lengths are assumptions.** The payload has `resets_at` and never the window
+length, so `rateLimits.js` hardcodes 5 hours and 7 days. A wrong constant moves the marker, and removes
+it when the assumed window is shorter than the real one. With `paceColors` on it also changes
+the color (D40). It cannot change the percentage or the countdown. `toMs` already rejects a reset more than 60
+days out.
+
+**No marker on the stale path.** A stale bar drops its urgency signals (D11). The marker
+compares quota to a live clock, so against a possibly outdated cached quota it would mislead.
+
+**Known cosmetic cost.** The marker cell no longer shows whether it was filled, so the visible
+fill can be off by one cell there. `H50 ████┃░░░` and `H60 ████┃░░░` look the same. The
+number beside the bar disambiguates. Because the fill is rounded to whole cells and the marker
+sits in one of them, the two can only be compared to about one cell, an eighth of the window.
+
+**What is verified and what is not (2026-10-13).** The fixture suite, in-process unit tests of
+the math with an injected clock, a mutation matrix over the window constants and the stale
+path, and an independent review of the bar change pass. Glyph and font coverage were measured on one Windows 10 machine by a script that is not kept
+in the repo.
+**Not yet verified:** a live Claude Code session on Windows Terminal, WSL, or macOS Terminal.app
+and iTerm2 (no Mac has been available), and that `resets_at` at the start of a real window is
+exactly 5 hours out. This entry is to be amended after that check.
+
+### D40. `paceColors`: the ramp can be read at projected pace, escalate-only and capped at orange
+
+The marker (D39) shows pace but leaves the color on current use. 40% used with a fifth of the
+window gone is on course to run out and shows a calm green. The danger ramp could be read at
+where the pace is heading.
+
+**Decision:** an opt-in boolean, `"paceColors": true`, default `false`. When on, the 5-hour and
+weekly bars read the ramp at `max(used, min(84, used / elapsed))`, and only once at least 10% of
+the window has elapsed. `renderBar` takes `opts.rampPct` for this and uses `max(used, rampPct)`,
+so no caller can lower urgency. The displayed number and fill are never changed, only the color
+the ramp is read at.
+
+**Never calmer than the plain ramp, by construction.** The elapsed fraction is at most 1, so
+`used / elapsed` is never below `used`, and the reading is clamped to at least `used` regardless.
+At any given moment pace is therefore equal to or more urgent than the plain ramp. Over time a
+bar can settle: 40% used reads orange at 20% elapsed and yellow at 80%, as the projection comes
+down toward the real number. It also does not make "80% used with ten minutes left" calmer:
+that projects to about 83% on the 5-hour bar, the same step as now. What it adds is early
+warning, which is the case the plain ramp misses.
+
+**Why capped at 84.** `dangerStyle` goes bold at 85 and adds the warning glyph at 95, and bold
+is reserved for urgency now (CLAUDE.md). A projection is "on course to", not "is". Uncapped,
+30% used with a fifth of the window gone would project to 150% and print a bold `⚠` beside a
+"30". Capping at 84 lets pace reach orange at most, so only real consumption shouts.
+
+**Why a 10% deadband.** One minute into a 5-hour window, 1% used projects to 300%. Below 10%
+elapsed the result is noise, so the real percentage is used instead. 10% is 30 minutes of the
+5-hour window and about 17 hours of the weekly one. **That is a known soft spot:** on the weekly
+bar, 8% used at 11% elapsed already projects to about 73%, which is orange. That is an honest
+straight-line projection but a bursty one. The constant is untuned. It is not exposed as config until real
+use shows what the right number is.
+
+**Rejected:**
+- *De-escalating when little time is left.* Not possible with a projection (see above). A
+  different rule would be needed and nobody has asked for one.
+- *Uncapped.* See the cap above.
+- *Default on.* It changes colors people already see. It ships off, and the default is to be
+  revisited in v0.8.0 after real use.
+- *Applying it to the context bar.* Context is not a time window, so there is no elapsed
+  fraction to project from.
+- *A separate hue for "projected".* That would blend the identity and urgency scales, which
+  `colors.js` and CLAUDE.md both keep apart.
+
+**Never on stale data.** The stale branch in `renderBar` returns before the marker or the ramp
+reading are consulted, and a test seeds the cache and renders through the real binary to prove
+it with `paceColors` on.
+
+**What is verified and what is not (2026-10-13).** An independent review (not kept in the
+repo) ran a grid of about 257,000 cases through the real functions and found no case of bold or
+the warning glyph below a real 85%, and none of pace coloring a bar calmer than the plain ramp.
+The repo carries a smaller grid of its own, 41 by 19 cases in `test/run.js`. A mutation matrix over the cap, the deadband, the
+max-with-real clamp, the opt-in flag and the config default fails the suite on each mutation.
+**Not yet verified:** whether the signal is useful or noisy in live work. That is the point of
+shipping it off by default.
