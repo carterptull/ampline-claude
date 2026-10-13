@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A pace marker on the 5-hour and weekly bars.** One cell of the bar becomes `┃` at the point
+  of the window that has already elapsed, so quota used and time used read off the same bar.
+  A fill head ahead of the marker means quota is being spent faster than the clock. The bar
+  stays 8 cells and the marker needs no color, so it shows under `NO_COLOR`. It is left out
+  when the reset time is unknown and on dimmed stale bars. See `DECISIONS.md` D39.
+- **`paceColors` (opt-in, default `false`).** Colors the 5-hour and weekly bars by where your pace
+  is heading, not only where it is now, so a bar that is on course to run out turns orange
+  early. It never colors a bar calmer than the plain ramp would, and stops at orange so bold and `⚠` stay
+  reserved for real consumption of 85% and up. It does not apply in the first 10% of a window.
+  See `DECISIONS.md` D40.
+- `elapsedFraction` and `paceRampPct` in `lib/usage.js`, and `opts.marker` / `opts.rampPct` on
+  `renderBar`. These are additions to declared interfaces; `resolveUsage` is unchanged.
+
 ### Changed
 - **Copyright is now held by Paymon Software.** The license is still MIT and its terms are
   unchanged; only the copyright holder named in `LICENSE` and the README footer differ.

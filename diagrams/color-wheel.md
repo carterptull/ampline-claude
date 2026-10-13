@@ -74,10 +74,12 @@ flowchart LR
 
     bar["lib/bar.js renderBar<br/>context, fiveHour, weekly"]
     stale["stale cache value<br/>dim only, no danger style"]
+    pace["paceColors, opt-in<br/>ramp read at projected use<br/>capped at 84, so never bold"]
 
     d1 --> d2 --> d3 --> d4 --> d5
     d5 --> bar
     stale -.-> bar
+    pace -.->|"raises the reading only"| bar
 
     style identity fill:transparent,stroke:#888
     style urgency fill:transparent,stroke:#888
@@ -90,6 +92,13 @@ the colors are a green to red climb, and bold starts at 85 percent. A non-finite
 makes `renderBar` return `null` before `dangerStyle` is ever called, so the segment is omitted. A stale
 cached value renders dim with no danger color, bold or glyph, because urgency from a possibly
 outdated number is worse than none.
+
+**Pace only raises the reading, and stops at orange.** With `paceColors` on, the 5-hour and weekly
+bars read the ramp at `max(used, min(84, used / elapsed))`, so a bar on course to run out can turn
+orange early. The elapsed fraction is at most 1, so the projection is never below the
+real value, and pace is never calmer than the plain ramp at the same moment. The cap at 84 keeps bold and the warning glyph
+for real consumption. The pace marker (`┃`) is a glyph, not a color, so it joins neither scale.
+D39 and D40 in [`../DECISIONS.md`](../DECISIONS.md) record both.
 
 **Why the two scales are not blended:** Opus xhigh is `#E8433D` and a usage bar at 85 percent is
 `#E8433D` too, so the same pixels mean different things in different segments. Keeping bold as the

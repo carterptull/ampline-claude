@@ -96,8 +96,8 @@ usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare
 | Git | `⎇ main ↑2 ●` | branch, ahead/behind, dirty (`●`) or clean (`✓`). `✓` means no *tracked* changes, see below |
 | Model + effort | `Opus 5.5 · high` | the 20-step wheel, see below |
 | Context | `C34 ███░░░░░` | context-window usage, green→red. Reflects the last completed API call, see below |
-| 5-hour usage | `H93 ███████░ ↺ 4h28m` | rate-limit window, with reset countdown. Subscription accounts only, see below |
-| Weekly usage | `W17 █░░░░░░░ ↺ 2d23h` | same shape, 7-day window. Subscription accounts only, see below |
+| 5-hour usage | `H93 ┃██████░ ↺ 4h28m` | rate-limit window, with reset countdown and a pace marker (`┃`). Subscription accounts only, see below |
+| Weekly usage | `W17 █░░░┃░░░ ↺ 2d23h` | same shape, 7-day window. Subscription accounts only, see below |
 | Cost | `$12.47 +2412/-1` | session cost estimate + lines changed |
 | Task | `Writing the render module…` | current in-progress todo, dimmed |
 | PR / MR | `#1` or `!7` | open GitHub PR (`#N`) or GitLab merge request (`!N`) for the current branch, colored by review state. The number is a clickable link in terminals that support hyperlinks |
@@ -105,7 +105,7 @@ usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare
 A full line looks like:
 
 ```
-ampline-claude │ ⎇ main ✓ │ Opus 5.5 · high │ C34 ███░░░░░ │ H93 ███████░ ↺ 4h28m │ W17 █░░░░░░░ ↺ 2d23h │ $12.47 +2412/-1 │ #1
+ampline-claude │ ⎇ main ✓ │ Opus 5.5 · high │ C34 ███░░░░░ │ H93 ┃██████░ ↺ 4h28m │ W17 █░░░┃░░░ ↺ 2d23h │ $12.47 +2412/-1 │ #1
 ```
 
 Wraps to two lines automatically when it doesn't fit `COLUMNS`.
@@ -113,6 +113,18 @@ Wraps to two lines automatically when it doesn't fit `COLUMNS`.
 That example is from a Claude.ai subscription account. On an enterprise or Teams account the
 `H` and `W` segments are absent, because Claude Code does not send rate-limit data for
 those account types. Everything else renders the same.
+
+**Reading the pace marker.** The `┃` in a usage bar marks how much of that window has already
+elapsed, so you can compare time used against quota used on one bar. In `H93 ┃██████░`, 93% of
+the quota is gone but the marker sits at the far left, so only about a tenth of the window has
+passed. That is the bar telling you to slow down. In `W17 █░░░┃░░░` the marker is well ahead of
+the fill, so the quota is being spent slower than the clock. A fill that runs clearly past the
+marker means you are using quota faster than time is passing. Read the two to about one cell, an
+eighth of the window: when they sit side by side you are roughly on pace. The marker replaces one
+of the eight cells, so the bar stays the same width, and the number beside it is always the exact percentage.
+It is left out when ampline-claude cannot tell where you are in the window, and on dimmed bars
+showing cached values. It assumes a 5-hour and a 7-day window, because the payload only
+reports when a window resets.
 
 **Git dirty is a deliberate narrower check.** For speed, the one `git status` call ampline-claude
 makes skips untracked files (`--untracked-files=no`). A repo whose only change is a handful of
@@ -163,6 +175,12 @@ Color tells you what's running. Bold tells you when to worry. The wheel answers 
 running*, the ramp answers *when to worry*, and mixing them (letting pink or violet show up in
 a usage bar) would turn a glance into something you have to decode instead of just see.
 
+**Pace coloring is opt-in.** The ramp normally reads the percentage you have used. With
+`"paceColors": true` the 5-hour and weekly bars read it at where your pace is heading instead,
+so 40% used with a fifth of the window gone turns orange rather than staying green. It never
+colors a bar calmer than the plain ramp would, and it stops at orange, so bold and `⚠` still mean you are really nearly out.
+See `DECISIONS.md` D40.
+
 ## Configuration
 
 Drop a `.amplinerc.json` in your project root (or `~/.amplinerc.json` for a global default).
@@ -190,7 +208,7 @@ then your home directory. Files don't merge together.
 | `line2From` | string | `"fiveHour"` | the segment where line 2 begins when wrapping |
 | `separator` | string | `" │ "` | rendered between segments |
 | `color` | boolean | `true` | `false` strips all ANSI from the output |
-| `paceColors` | boolean | `false` | color the 5-hour and weekly bars by where your pace is heading, not only where it is now. It is a straight-line projection from elapsed time, so it does not apply in the first 10% of a window, and it assumes a 5-hour and a 7-day window. It can raise a bar to orange early but never lowers one and never reaches bold or `⚠`. |
+| `paceColors` | boolean | `false` | color the 5-hour and weekly bars by where your pace is heading, not only where it is now. It is a straight-line projection from elapsed time, so it does not apply in the first 10% of a window, and it assumes a 5-hour and a 7-day window. It can raise a bar to orange early, never colors one calmer than the plain ramp would, and never reaches bold or `⚠`. |
 | `maxBranchLength` | number | `24` | branch name truncation |
 | `maxTaskLength` | number | `40` | task text truncation |
 
@@ -215,6 +233,11 @@ token and depending on an undocumented endpoint, so instead every `rate_limits` 
 written through to a local cache. On a cold start, the bars appear instantly showing the
 last-known values, dimmed to signal they're stale, then snap to live the moment the first
 response lands.
+
+**Pace marker.** The marker needs the window's reset time and assumes the window lengths, 5
+hours and 7 days, since the payload never says how long a window is. It uses the live value
+only. A dimmed cached bar never shows one, because a cached quota compared against a live clock
+would mislead.
 
 **Degradation.** Every segment either renders or returns nothing. Never a crash, never a hang.
 If data's missing, that one segment just gets skipped and the rest of the line still renders.
@@ -286,6 +309,16 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
   (`\x1b[38;2;r;g;bm`). There's no ANSI-16 fallback yet, so on a terminal without truecolor
   support, colors will render incorrectly instead of degrading gracefully. Set `NO_COLOR=1`
   to opt out of color entirely.
+- **The pace marker rests on assumed window lengths.** ampline-claude treats the 5-hour window
+  as 5 hours and the weekly one as 7 days, because the payload only gives the reset time. If
+  Claude's windows are ever different, the marker moves, or disappears when the assumed window is shorter than the real one, and with
+  `paceColors` on the color changes too. The percentage and the countdown never do. The marker also
+  hides whether its own cell was filled, so the visible fill can be off by one cell there. The
+  number beside the bar stays exact. Its glyph (`┃`) has only been checked against Windows
+  Terminal fonts so far, not yet in macOS Terminal.app or iTerm2.
+- **`paceColors` is a straight-line projection.** It assumes you keep spending at the average
+  rate so far, so a short burst early in a long window can turn a bar orange that later settles.
+  It does not apply in the first 10% of a window. It is off by default.
 - **Opus `max` and Fable `low` sit next to each other in the wheel.** Both are meant to read
   as "spending a lot," which is intentional, but the exact hue boundary between them is close.
 - **Usage bars need one API response before they first appear** on a brand-new install. The
