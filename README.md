@@ -314,8 +314,8 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
   Claude's windows are ever different, the marker moves, or disappears when the assumed window is shorter than the real one, and with
   `paceColors` on the color changes too. The percentage and the countdown never do. The marker also
   hides whether its own cell was filled, so the visible fill can be off by one cell there. The
-  number beside the bar stays exact. Its glyph (`┃`) has only been checked against Windows
-  Terminal fonts so far, not yet in macOS Terminal.app or iTerm2.
+  number beside the bar stays exact. Its glyph (`┃`) has been checked on Windows and on
+  macOS. Other terminals and fonts have not been tried.
 - **`paceColors` is a straight-line projection.** It assumes you keep spending at the average
   rate so far, so a short burst early in a long window can turn a bar orange that later settles.
   It does not apply in the first 10% of a window. It is off by default.
@@ -351,13 +351,14 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
   password. Otherwise the number still shows, as plain text. Terminals without hyperlink
   support, such as macOS Terminal.app, show the number without a link. `NO_COLOR` and
   `"color": false` also turn the link off.
-- **Linux is verified on real hardware. macOS is not yet.** The fixture suite, the install
-  and uninstall flow, the shebang, UTF-8 glyph output, and color behavior have all been
-  confirmed on a real Linux box, including the absolute-Node-path resolution a
+- **Linux is verified on real hardware. macOS is confirmed for the statusline render.** On
+  Linux the fixture suite, the install and uninstall flow, the shebang, UTF-8 glyph output,
+  and color behavior have all been confirmed, including the absolute-Node-path resolution a
   version-managed Node needs (see `DECISIONS.md` D36). What a real Claude Code process
-  itself supplies as environment variables on Linux is still unconfirmed, since this was a
-  controlled invocation rather than a live session. macOS has had none of this run against
-  it yet.
+  itself supplies as environment variables on Linux is still unconfirmed, since that check
+  was a controlled invocation rather than a live session. On macOS, v0.7.0 rendering,
+  including the pace marker glyph, has been confirmed working on a real Mac. The macOS
+  install and uninstall flow has not been confirmed separately.
 
 ---
 

@@ -651,6 +651,10 @@ macOS remains unverified, since nothing here ran on macOS hardware. Also unverif
 invokes the hook on Linux (D26 remains open on that specific point) — this pass verified
 the binary's own behavior under controlled invocation, not a live Claude Code session.
 
+**Update (2026-10-14):** v0.7.0 rendering, including the pace marker glyph, was confirmed on
+a real Mac (see D39). That check does not cover the macOS install and uninstall flow, or the
+environment variables a real Claude Code process supplies, so those remain open.
+
 ## Phase 3 — v0.6.0: Haiku 5.5 effort and GitLab merge requests
 
 ### D37. Haiku 5.5 gets a five-stop blue ramp; no-effort Haiku keeps its flat blue
@@ -789,6 +793,8 @@ compares quota to a live clock, so against a possibly outdated cached quota it w
 fill can be off by one cell there. `H50 ████┃░░░` and `H60 ████┃░░░` look the same. The
 number beside the bar disambiguates. Because the fill is rounded to whole cells and the marker
 sits in one of them, the two can only be compared to about one cell, an eighth of the window.
+In live use, 7% used with the marker in the first cell rendered as `H7 ┃░░░░░░░`: the one
+filled cell is hidden under the marker, and only the number shows that anything is used.
 
 **What is verified and what is not (2026-10-13).** The fixture suite, in-process unit tests of
 the math with an injected clock, a mutation matrix over the window constants and the stale
@@ -801,11 +807,18 @@ reset times given as epoch seconds, milliseconds, ISO text and a numeric string,
 seeded fuzz of 4000 hostile segment inputs. Each of those guards fails the suite under a
 targeted mutation.
 
-**Not yet verified:** how it looks in a live Claude Code session in a real terminal (Windows
-Terminal, and macOS Terminal.app and iTerm2, where no Mac has been available), and that
-`resets_at` at the start of a real window is exactly 5 hours out. WSL here has only Node 16,
-below the `engines` floor of 24, so it was not run; Linux on Node 24 is covered by CI. This
-entry is to be amended after the live check.
+**Verified by Carter, 2026-10-14.** The throwaway sweep, `--ruler` and `--pace` runs on
+Windows 10 in PowerShell were reported as verified. A live Claude Code 2.1.300 session on
+Windows then showed `H7 ┃░░░░░░░ ↺ 4h52m │ W1 ░┃░░░░░░ ↺ 6d2h`: both markers sit in the
+computed cells (about 2.7% and 13.1% of the window elapsed). That payload reported 4h52m
+left eight minutes into a window, which is consistent with the assumed 5-hour length. Carter
+also reported the build working on a Mac. The macOS terminal app, and whether that was a
+live session or the check script, were not recorded.
+
+**Not yet verified:** the macOS terminal app and font (Terminal.app or iTerm2), that
+`resets_at` at the very start of a real window is exactly 5 hours out (one data point so
+far), and any terminal beyond those. WSL here has only Node 16, below the `engines` floor of
+24, so it was not run; Linux on Node 24 is covered by CI.
 
 ### D40. `paceColors`: the ramp can be read at projected pace, never calmer than the plain ramp and capped at orange
 

@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `renderBar`. These are additions to declared interfaces; `resolveUsage` is unchanged.
 
 ### Changed
+- **Known limitations updated for macOS.** v0.7.0 rendering, including the pace marker glyph,
+  is confirmed working on a real Mac, and the marker was also confirmed in a live Claude Code
+  session on Windows. See `DECISIONS.md` D39.
 - **Copyright is now held by Paymon Software.** The license is still MIT and its terms are
   unchanged; only the copyright holder named in `LICENSE` and the README footer differ.
 
