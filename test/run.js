@@ -197,12 +197,19 @@ function runHaikuTests() {
     tasks: [{ id: 't1', type: 'local_agent', status: 'running', label: 'worker',
               model: 'claude-haiku-5-5', tokenCount: 1000, contextWindowSize: 200000, cwd: '/tmp/project', ...extra }],
   });
-  runInline('haiku subagent row with effort follows the ramp', subTask({ effort: 'low' }),
-    { expect: [sgr(HAIKU_RAMP.low)], refute: ['NaN', 'undefined'] }, {}, undefined, [BIN, '--subagent']);
-  runInline('haiku subagent row without effort stays flat blue', subTask({}),
-    { expect: [sgr(HAIKU_FLAT)], refute: [sgr(HAIKU_RAMP.low), 'NaN', 'undefined'] }, {}, undefined, [BIN, '--subagent']);
-  runInline('haiku subagent row with numeric budget stays flat blue', subTask({ effort: 12000 }),
-    { expect: [sgr(HAIKU_FLAT)], refute: [sgr(HAIKU_RAMP.low), 'NaN', 'undefined'] }, {}, undefined, [BIN, '--subagent']);
+  // Rows are JSON lines now (see runSubagentContractTests), so the escape bytes live
+  // inside the parsed `content` string rather than raw in stdout.
+  const subRowCheck = (name, extra, want, refuteSgr) => {
+    const { res, rows } = subagentRun(subTask(extra));
+    const content = rows[0] && typeof rows[0].content === 'string' ? rows[0].content : '';
+    const ok = res.status === 0 && content.includes(want) &&
+      !refuteSgr.some((x) => content.includes(x)) && !/NaN|undefined/.test(content);
+    if (ok) console.log(`  ok    ${name}`);
+    else fail(name, `content=${JSON.stringify(content)} stdout=${JSON.stringify(res.stdout)}`);
+  };
+  subRowCheck('haiku subagent row with effort follows the ramp', { effort: 'low' }, sgr(HAIKU_RAMP.low), []);
+  subRowCheck('haiku subagent row without effort stays flat blue', {}, sgr(HAIKU_FLAT), [sgr(HAIKU_RAMP.low)]);
+  subRowCheck('haiku subagent row with numeric budget stays flat blue', { effort: 12000 }, sgr(HAIKU_FLAT), [sgr(HAIKU_RAMP.low)]);
 
   const { WHEEL } = require('../lib/colors');
   if (WHEEL.length !== 20) fail('WHEEL', `expected 20 steps, got ${WHEEL.length}`);
@@ -766,6 +773,171 @@ function runPaceHardeningTests() {
     `produced=${produced} marked=${marked}`);
 }
 
+// ---- subagentStatusLine output contract ------------------------------------
+// Claude Code documents the command's OUTPUT as one JSON line per row,
+// {"id": "<task id>", "content": "<row body>"}. A row with no id keeps the default
+// rendering, so a bare text line is silently ignored. Earlier versions printed bare
+// text rows; nothing checked the output shape (only the input payload was captured).
+function subagentRun(payload, { env, raw } = {}) {
+  const res = spawnRender(raw !== undefined ? raw : JSON.stringify(payload), { args: [BIN, '--subagent'], env });
+  const lines = (res.stdout || '').split('\n').filter((l) => l.length > 0);
+  const rows = lines.map((l) => { try { return JSON.parse(l); } catch { return { __invalid: l }; } });
+  return { res, lines, rows, raw: res.stdout || '' };
+}
+
+function runSubagentContractTests() {
+  const { renderSubagentLine, renderTaskRow } = require('../lib/segments/subagents');
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    subagent contract: ' + name);
+    else fail('subagent contract: ' + name, detail);
+  };
+  const fixture = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'subagent-tasks.json'), 'utf8'));
+  const ids = fixture.tasks.map((t) => t.id);
+  const stripSgr = (x) => x.replace(/\x1b\[[0-9;]*m/g, '');
+
+  // The real captured payload, through the real binary.
+  const { res, lines, rows, raw } = subagentRun(fixture);
+  check('exits 0', res.status === 0, String(res.status));
+  check('every output line is valid JSON', rows.length > 0 && rows.every((r) => !r.__invalid), JSON.stringify(lines));
+  check('each row has exactly the keys id and content, both strings',
+    rows.every((r) => Object.keys(r).sort().join() === 'content,id' && typeof r.id === 'string' && typeof r.content === 'string'),
+    JSON.stringify(rows));
+  check('one row per task, ids echoed in order', JSON.stringify(rows.map((r) => r.id)) === JSON.stringify(ids),
+    JSON.stringify(rows.map((r) => r.id)));
+  check('no raw escape byte reaches stdout (it is JSON-escaped)', !(res.stdout || '').includes(ESC), JSON.stringify(res.stdout));
+  check('output is newline-terminated', (res.stdout || '').endsWith('\n'), JSON.stringify((res.stdout || '').slice(-12)));
+  // Expected rows come from a child with colors on, so a developer's exported NO_COLOR
+  // cannot make an in-process module disagree with the (NO_COLOR-scrubbed) child output.
+  const expectedRows = (() => {
+    const env = { ...process.env };
+    delete env.NO_COLOR;
+    const r = spawnSync(process.execPath, ['-e',
+      "const {renderTaskRow}=require(process.argv[1]+'/lib/segments/subagents.js');" +
+      "const f=JSON.parse(require('fs').readFileSync(process.argv[2],'utf8'));" +
+      'process.stdout.write(JSON.stringify(f.tasks.map((t)=>renderTaskRow(t,f.columns))))',
+      ROOT, path.join(FIXTURES, 'subagent-tasks.json')], { encoding: 'utf8', env, timeout: 10000 });
+    try { return JSON.parse(r.stdout); } catch { return null; }
+  })();
+  check('each content is the row text renderTaskRow produces',
+    Array.isArray(expectedRows) && rows.length === expectedRows.length && rows.every((r, i) => r.content === expectedRows[i]),
+    JSON.stringify({ got: rows.map((r) => r.content), want: expectedRows }));
+
+  // A blank line between rows, a CR, or a pretty-printed object would all still "parse" after
+  // filtering, so pin the raw bytes: each row is exactly one line, and the id comes first.
+  const rawLines = raw.split('\n');
+  check('no blank line between or after rows', raw.length > 0 && rawLines.pop() === '' && rawLines.every((l) => l.length > 0),
+    JSON.stringify(raw.slice(0, 200)));
+  check('no carriage return anywhere', !raw.includes('\r'), JSON.stringify(raw.slice(0, 120)));
+  check('each line is a compact object that starts with the id', rawLines.every((l) => l.startsWith('{"id":"') && l.endsWith('}')),
+    JSON.stringify(rawLines));
+  const contents = rows.map((r) => (typeof r.content === 'string' ? r.content : ''));
+  check('content carries the label and no payload noise',
+    contents.length > 0 && contents.every((c) => c.includes('Payload capture') || c.includes('Numeric effort')) &&
+    contents.every((c) => !/local_agent|NaN|undefined/.test(c)), JSON.stringify(contents));
+
+  // Rows that cannot be matched back to a task keep Claude Code's default rendering.
+  const t = (extra) => ({ id: 'x', status: 'running', label: 'w', model: 'claude-sonnet-5-5', tokenCount: 10, ...extra });
+  const mixed = subagentRun({ columns: 120, tasks: [t({ id: 'keep-1' }), t({ id: undefined }), t({ id: '' }),
+    t({ id: 42 }), t({ id: null }), null, 'junk', 7, t({ id: 'keep-2' })] });
+  check('tasks without a usable id are omitted, the rest kept in order',
+    JSON.stringify(mixed.rows.map((r) => r.id)) === JSON.stringify(['keep-1', 'keep-2']), JSON.stringify(mixed.lines));
+
+  // Display name: label, then description, then name, then agentType, then a constant.
+  const nameOf = (extra) => {
+    const r = subagentRun({ columns: 120, tasks: [{ id: 'n', status: 'running', ...extra }] }).rows[0];
+    return r && typeof r.content === 'string' ? stripSgr(r.content) : '';
+  };
+  check('label wins', nameOf({ label: 'LBL', description: 'DSC', name: 'NM', agentType: 'AT' }).includes('LBL'), nameOf({ label: 'LBL' }));
+  check('description is next', nameOf({ description: 'DSC', name: 'NM', agentType: 'AT' }).includes('DSC'), nameOf({ description: 'DSC' }));
+  check('then name', nameOf({ name: 'NM', agentType: 'AT' }).includes('NM'), nameOf({ name: 'NM' }));
+  check('then agentType', nameOf({ agentType: 'code-reviewer' }).includes('code-reviewer'), nameOf({ agentType: 'code-reviewer' }));
+  check('then the constant', nameOf({}).includes('agent'), nameOf({}));
+
+  // Nothing to say means saying nothing: no blank line for the parser to trip on.
+  for (const [label, payload] of [['empty tasks', { columns: 120, tasks: [] }], ['no tasks key', { columns: 120 }],
+    ['tasks not an array', { columns: 120, tasks: 'x' }], ['all rows unusable', { columns: 120, tasks: [null, { label: 'no id' }] }]]) {
+    const r = subagentRun(payload);
+    check(label + ': writes nothing, exits 0', r.res.status === 0 && r.res.stdout === '', JSON.stringify(r.res.stdout));
+  }
+  for (const [label, raw] of [['malformed stdin', '{not json'], ['empty stdin', ''], ['JSON null', 'null'], ['JSON array', '[1,2]']]) {
+    const r = subagentRun(null, { raw });
+    check(label + ': writes nothing, exits 0', r.res.status === 0 && r.res.stdout === '', JSON.stringify(r.res.stdout));
+  }
+
+  // Foreign strings: the contract is line based, so a newline in a label must not split a row,
+  // and escape sequences must not survive.
+  const evil = 'ok' + ESC + ']0;pwned' + BEL + ESC + '[2J\nINJECTED\u2028LINE' + String.fromCharCode(0x9b) + '31m';
+  const hostile = subagentRun({ columns: 120, tasks: [t({ id: 'h1', label: evil, description: evil }), t({ id: 'h2', label: 'after' })] });
+  check('a hostile label yields exactly one line per task', hostile.lines.length === 2, JSON.stringify(hostile.lines));
+  check('hostile label rows are still valid JSON with the right ids',
+    hostile.rows.length === 2 && hostile.rows[0].id === 'h1' && hostile.rows[1].id === 'h2', JSON.stringify(hostile.rows));
+  const c0 = (hostile.rows[0] && hostile.rows[0].content) || '';
+  check('no OSC title or clear-screen sequence survives in content',
+    !c0.includes(ESC + ']0;') && !c0.includes(ESC + '[2J') && !c0.includes(BEL), JSON.stringify(c0));
+  check('no C1 control or line separator survives in content',
+    !/[\u0080-\u009f\u2028\u2029]/.test(c0), JSON.stringify(c0));
+
+  // Colors off: still JSON, and content has no escapes at all.
+  const plain = subagentRun(fixture, { env: { NO_COLOR: '1' } });
+  check('NO_COLOR rows are valid JSON with escape-free content',
+    plain.rows.length === ids.length && plain.rows.every((r) => !r.__invalid && !r.content.includes(ESC)), JSON.stringify(plain.lines));
+
+  // Many rows stay one line each.
+  const many = subagentRun({ columns: 100, tasks: Array.from({ length: 200 }, (_, i) => t({ id: 'id-' + i, label: 'task ' + i })) });
+  check('200 tasks give 200 lines in order',
+    many.rows.length === 200 && many.rows.every((r, i) => r.id === 'id-' + i), String(many.rows.length));
+
+  // Every field that reaches the row is foreign. `model` is rendered as text, and Claude Code
+  // renders content as-is (OSC 8 links included), so an escape in it must not survive.
+  const mod = (model) => {
+    const r = subagentRun({ columns: 120, tasks: [t({ id: 'm1', model })] });
+    return { r, c: (r.rows[0] && typeof r.rows[0].content === 'string') ? r.rows[0].content : '' };
+  };
+  const hostileModels = {
+    'OSC 8 link opener': ESC + ']8;;http://evil.example' + BEL + 'x',
+    'clear screen and home': ESC + '[2J' + ESC + '[H',
+    'C1 CSI': String.fromCharCode(0x9b) + '31m',
+    'object form with id': { id: ESC + ']8;;http://evil.example' + BEL + 'x' },
+    'object form with display_name': { display_name: ESC + '[2J' },
+    'NUL and BEL': 'a' + String.fromCharCode(0) + BEL + 'b',
+  };
+  for (const [label, model] of Object.entries(hostileModels)) {
+    const { r, c } = mod(model);
+    check('hostile model (' + label + ') leaves no escape beyond our own colors',
+      r.rows.length === 1 && c.length > 0 && !c.includes(ESC + ']') && !c.includes(ESC + '[2J') && !c.includes(BEL) &&
+      !/[\u0080-\u009f]/.test(c) && !/[\x00-\x08\x0b-\x1a\x1c-\x1f\x7f]/.test(stripSgr(c)),
+      JSON.stringify(c));
+  }
+
+  // status is a lookup key: names that exist on Object.prototype must not resolve to a color.
+  for (const status of ['constructor', 'CONSTRUCTOR', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    const c = (subagentRun({ columns: 120, tasks: [t({ id: 's1', status })] }).rows[0] || {}).content || '';
+    check('status "' + status + '" is not a color', c.includes('↳') && !/function|\[object|native code|undefined/.test(c),
+      JSON.stringify(c));
+  }
+
+  // The name is cut to a budget (32 cells at 120 columns), ending in an ellipsis.
+  const longName = (subagentRun({ columns: 120, tasks: [t({ id: 'l1', label: 'x'.repeat(100) })] }).rows[0] || {}).content || '';
+  const shown = stripSgr(longName);
+  check('a long label is truncated to the budget with an ellipsis',
+    shown.includes('x'.repeat(31) + '…') && !shown.includes('x'.repeat(33)), JSON.stringify(shown));
+
+  // The id is echoed from the payload and never rendered, but a line-based reader may split on
+  // the Unicode line separators, so they are escaped in the JSON text rather than left raw.
+  const sepId = 'a' + String.fromCharCode(0x2028) + 'b' + String.fromCharCode(0x2029) + 'c';
+  const sep = subagentRun({ columns: 120, tasks: [t({ id: sepId })] });
+  check('line separators in an id are escaped, and the id round-trips',
+    sep.raw.length > 0 && !sep.raw.includes(String.fromCharCode(0x2028)) && !sep.raw.includes(String.fromCharCode(0x2029)) &&
+    sep.rows.length === 1 && sep.rows[0].id === sepId, JSON.stringify(sep.raw));
+
+  // The function itself, in process.
+  const direct = renderSubagentLine({ columns: 120, tasks: [t({ id: 'd1' })] });
+  check('renderSubagentLine returns newline-terminated JSON', typeof direct === 'string' && direct.endsWith('\n') &&
+    JSON.parse(direct.trim()).id === 'd1', JSON.stringify(direct));
+  check('renderSubagentLine returns an empty string for nothing',
+    renderSubagentLine(null) === '' && renderSubagentLine({}) === '', 'expected empty');
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -782,6 +954,7 @@ function main() {
   runPaceMarkerWiringTests();
   runPaceColorTests();
   runPaceHardeningTests();
+  runSubagentContractTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();

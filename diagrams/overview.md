@@ -22,7 +22,7 @@ flowchart TB
         layout["lib/layout.js<br/>one line, or two if too wide"]
     end
 
-    sub["<b>segments/subagents.js</b><br/>separate path: one row per task,<br/>width from the payload"]
+    sub["<b>segments/subagents.js</b><br/>separate path: one JSON line per task,<br/>width from the payload"]
 
     subgraph disk["Local disk"]
         direction LR
