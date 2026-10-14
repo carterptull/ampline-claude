@@ -70,8 +70,8 @@ flowchart TB
     check{"tasks is a<br/>non-empty array?"}
     empty["empty string"]
     width["width = input.columns<br/>COLUMNS is unset here, so it is never read"]
-    row["renderTaskRow per task<br/>try/catch per row, a bad row is dropped"]
-    join["rows joined with newlines"]
+    row["renderTaskRow per task with a string id<br/>try/catch per row, a bad row is dropped"]
+    join["one JSON line per row<br/>id echoed, content is the row text"]
     out["stdout, then exit 0"]
 
     start --> parse --> check
@@ -82,10 +82,12 @@ flowchart TB
     style width fill:transparent,stroke:#888
 ```
 
-Each row is built from `task.label || task.description || 'agent'` (sanitized), a status color
+Each row is built from `task.label || task.description || task.name || task.agentType || 'agent'`
+(sanitized), a status color
 for the arrow, the model collapsed to a family label, and an optional token count. The name
-budget comes from `columns`. There is no `name` field, and `task.type` is always `"local_agent"`,
-so it is never shown. `task.effort` is usually absent or numeric, and `normalizeEffortLevel`
+budget comes from `columns`. The output is one `{"id","content"}` JSON line per task, and a task
+without a string id is left out so Claude Code keeps its default row (D41). `task.type` is always
+`"local_agent"`, so it is never shown. `task.effort` is usually absent or numeric, and `normalizeEffortLevel`
 returns `null` for both, which is why the row color falls back to the family. See
 [`color-wheel.md`](color-wheel.md).
 

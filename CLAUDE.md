@@ -138,10 +138,13 @@ renderers take one `ctx` object rather than positional args, so a segment that o
 ## The subagent payload is a different shape entirely
 
 `subagentStatusLine` does not receive a single task — it receives `{ columns, tasks: [...] }`,
-one row per task, newline-separated. Verified against a real captured payload (see
-`DECISIONS.md` D2-D5):
+one entry per row. Its OUTPUT is not bare text: Claude Code expects one JSON line per row,
+`{"id": "<task id>", "content": "<row>"}`, with the id echoed, and a row with no id keeps the
+default rendering (`DECISIONS.md` D41). The input shape was verified against a real captured
+payload (see D2-D5):
 
-- No `name` field. Display name is `task.label || task.description || 'agent'`.
+- Display name is `task.label || task.description || task.name || task.agentType || 'agent'`.
+  `name` and `agentType` are in the current docs but were absent from the captured payloads (D2).
 - `task.type` is always the literal string `"local_agent"` — never use it for display.
 - `task.effort` is usually absent (subagents inherit session effort) and can be a **numeric**
   token budget instead of a level string. `normalizeEffortLevel` returns `null` for both

@@ -57,6 +57,13 @@ The observed task object is:
 dropped from the chain — falling back to it would print the literal string `local_agent`
 in every row where the first two were missing, which is worse than the generic `agent`.
 
+**Update (2026-10-14):** Claude Code's current documentation lists an optional `name` (the
+name the subagent is addressed by) and an `agentType` (v2.1.293 and later, the same value
+hooks receive as `agent_type`), so "unbuildable" no longer holds. The display chain is now
+`label || description || name || agentType || 'agent'` (D41). The payloads captured above
+predate those fields and have not been re-captured, so whether a live payload carries them
+is documented, not observed.
+
 ### D3. `task.effort` is absent in the ordinary case
 
 Plan §1.6 flagged `effort` as possibly a numeric token budget. On 2.1.220 it was **absent
@@ -874,3 +881,50 @@ The repo carries a smaller grid of its own, 41 by 19 cases in `test/run.js`. A m
 max-with-real clamp, the opt-in flag and the config default fails the suite on each mutation.
 **Not yet verified:** whether the signal is useful or noisy in live work. That is the point of
 shipping it off by default.
+
+### D41. The subagent line prints `{"id","content"}` JSON lines, not bare text rows
+
+The first `--subagent` implementation printed one ANSI text row per task, newline separated.
+It was built from the input payload captured in Phase 1 (D2 to D5) and from the original plan.
+The OUTPUT format was never checked against Claude Code. Claude Code's documentation
+("Subagent status lines" on the statusline page) says the command writes one JSON line per
+row, `{"id": "<task id>", "content": "<row body>"}`, with the task's `id` echoed, and that a
+row with no `id` keeps the default rendering. Under that contract the bare text rows carried
+no id and were most likely ignored, so `subagentStatusLine` would have changed nothing. It was
+found by comparing against another statusline's implementation, not by a test or a report.
+
+**Decision:** `renderSubagentLine` emits `JSON.stringify({ id, content }) + "\n"` for each task
+whose `id` is a non-empty string, and nothing for any other task, which keeps Claude Code's
+default row for it. `content` is the same row text as before, sanitized the same way. The
+display name chain gains `name` and `agentType` after `label` and `description` (see D2).
+No tasks, or none with a usable id, means no output at all rather than a blank line.
+
+**Why JSON.stringify matters beyond the format.** The protocol is line based and `content` is
+rendered as-is, including OSC 8 hyperlinks. `JSON.stringify` keeps every row on one physical
+line and escapes control bytes, so a label with a newline cannot forge a second row. The
+existing `sanitize()` still strips escape sequences before the text is built.
+
+**Also fixed here, found in review.** The model id was the one displayed field that was not
+sanitized, so a hostile `model` value became a live OSC 8 link or a clear-screen sequence in
+`content`, which Claude Code renders as-is. It is now sanitized like the label. `status` was
+used as a bare lookup key, so `"constructor"` printed function source into the row, the same
+bug class as D38's `review_state`; it is now an own-property lookup. And the echoed `id` has
+U+2028 and U+2029 escaped in the JSON text, since it is the one field that is echoed rather
+than sanitized and some line readers split on those characters. Tests also now pin the raw
+bytes (no blank line between rows, no carriage return, the `id` key first), because filtering
+blank lines before parsing would have hidden exactly that.
+
+**Rejected:**
+- *Printing bare text as well as JSON.* A reader of JSON lines would choke on or discard the
+  extra lines, and no version is known to read bare rows.
+- *Echoing a non-string id with `String(id)`.* If Claude Code ever sent numbers, a guessed
+  string might not match the task, and the safe failure is the default row.
+- *Hiding a row with an empty `content`.* That is a documented way to hide a row. We omit the
+  task instead, which keeps the default row rather than removing information.
+
+**What is verified and what is not (2026-10-14).** The output shape is covered by tests that
+parse every line as JSON, check the keys, the echoed ids and their order, the trailing newline,
+the omission rules, hostile labels and `NO_COLOR`. **Not verified live:** that Claude Code now
+renders these rows in the agent panel. This is to be amended after that check. Also unknown is
+which Claude Code version introduced the JSON contract, so a user on a much older version may
+see a difference.

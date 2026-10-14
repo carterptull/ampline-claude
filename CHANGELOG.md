@@ -28,6 +28,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Copyright is now held by Paymon Software.** The license is still MIT and its terms are
   unchanged; only the copyright holder named in `LICENSE` and the README footer differ.
 
+### Fixed
+- **The subagent status line now uses Claude Code's documented output format.** `--subagent`
+  printed bare text rows, but Claude Code expects one JSON line per row, `{"id","content"}`, and
+  keeps its own default row for anything else, so the custom rows were most likely never shown.
+  It now emits that format, leaves out tasks with no id, and falls back to the subagent's `name`
+  and `agentType` when there is no label or description. The model id is now sanitized like the
+  other displayed fields, and a `status` that names an `Object.prototype` property (such as
+  `constructor`) no longer prints into the row. See `DECISIONS.md` D41.
+
 ## [0.6.0] - 2026-10-07
 
 ### Added
