@@ -100,9 +100,10 @@ flowchart LR
 
 | Control | Where | Stops |
 | --- | --- | --- |
-| `sanitize()` | applied to branch name, repo name, directory name, todo text, subagent label and description, model name, and the config `separator` | Terminal escape sequences smuggled in through text the user did not write. A committed `.amplinerc.json` loads automatically, so an unsanitized `separator` was a live OSC 8 injection (D19) |
+| `sanitize()` | applied to branch name, repo name, directory name, todo text, subagent label and description, model name (including the subagent row's model id), and the config `separator` | Terminal escape sequences smuggled in through text the user did not write. A committed `.amplinerc.json` loads automatically, so an unsanitized `separator` was a live OSC 8 injection (D19) |
 | `safeLinkUrl()` in `lib/segments/pr.js` | `pr.url` before it goes inside an OSC 8 hyperlink | A BEL or ESC in a URL ending the link early and injecting more. Only a plain `https` URL with no credentials becomes a link, and the parsed `href` is emitted, not the raw string (D38) |
-| `Object.hasOwn` lookup, exact `pr.kind` match | `review_state` color table, `!N` versus `#N` label | `review_state: "constructor"` printing function source. The `kind` string itself is never interpolated (D38) |
+| `Object.hasOwn` lookup, exact `pr.kind` match | `review_state` color table, subagent `status` color table, `!N` versus `#N` label | `review_state: "constructor"` or `status: "constructor"` printing function source. The `kind` string itself is never interpolated (D38, D41) |
+| Type and range checks | `repo.name` and `display_name` must be strings, a non-string `current_dir` falls back to `cwd`, cost must be in 0 to 1e9 and line counts non-negative integers | A sanitized `String({})` is still `[object Object]`, and a bare finite number printed as `1e+21`, `$-5.00` or `+-3` (D42) |
 | `-c core.fsmonitor=` | the one `execFileSync('git', ...)` call | A repo's `.git/config` naming a hook command that git would run on every render (D20) |
 | `--no-optional-locks` | the same call | Taking the index lock every 30 seconds and contending with the user's own git commands |
 | 400ms timeout, argv array, stderr ignored | the same call | A slow or hung `git` blocking a render. There is no shell, so no argument is parsed as a command line |

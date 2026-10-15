@@ -36,6 +36,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `agentType` when there is no label or description. The model id is now sanitized like the
   other displayed fields, and a `status` that names an `Object.prototype` property (such as
   `constructor`) no longer prints into the row. See `DECISIONS.md` D41.
+- **Values of the wrong type or range no longer print.** A non-string repo name or model
+  display name used to print as `[object Object]`, `5` or `true`, and cost accepted `$-5.00`,
+  `$1e+21` and `+-3/--4`. Names must now be strings, cost must be 0 up to 1e9, and line counts
+  must be non-negative integers. An unusable `current_dir` falls back to `cwd` for both the
+  directory and git segments. Escape sequences were already stripped everywhere; this is about
+  types, and is now covered by a whole-line injection suite. See `DECISIONS.md` D42.
+- **A rate-limit percentage of `null`, `""` or `false` no longer shows as 0%.** It was coerced
+  with `Number()`, drew a bar, and was cached, so a later render with no usage data served it
+  for up to a day. A percentage must now be a number.
+- **A todo that is not text no longer prints `[object Object]` on the second render**, and
+  another session's task can no longer appear because its id starts with yours. Session ids are
+  matched exactly, and a blank task is left out instead of leaving an empty segment.
+- **A very long run of spaces in a model name no longer stalls the render.** A display name of
+  100,000 spaces took 8 seconds and a million never finished. The name is bounded before it
+  reaches a pattern, and the pattern is linear.
+- **Empty names fall back instead of printing nothing**: a model whose display name cleans to
+  nothing uses its id, and a blank repo name uses the directory name. Repo and directory names
+  are capped at 40 characters. Subagent rows ignore names and token counts that are not the
+  right type.
 
 ## [0.6.0] - 2026-10-07
 
