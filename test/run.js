@@ -1326,6 +1326,153 @@ function runInjectionFollowupTests() {
   check('a narrow terminal wraps to two lines', narrow.lines === 2, JSON.stringify(narrow));
 }
 
+// ---- Bidirectional and invisible characters, and terminal cell width -----------------
+// sanitize() strips terminal control sequences, but a bidirectional override (U+202E) is not a
+// control sequence: it reorders the text AFTER it on bidi-capable terminals, which here is the
+// model name, usage bars and countdown. Zero-width and tag characters are invisible, so a name
+// can be blank on screen or carry hidden text. ZWJ and ZWNJ are legitimate (emoji sequences,
+// Persian) and must survive. Every character below is built from a code point on purpose.
+function runInvisibleCharacterTests() {
+  const { sanitize } = require('../lib/colors');
+  const { visibleWidth } = require('../lib/layout');
+  const cp = (...n) => String.fromCodePoint(...n);
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    invisible characters: ' + name);
+    else fail('invisible characters: ' + name, detail);
+  };
+  const show = (str) => Array.from(str).map((c) => 'U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')).join(' ');
+
+  const mustStrip = {
+    'right-to-left override': 0x202e, 'left-to-right override': 0x202d, 'left-to-right embedding': 0x202a,
+    'right-to-left embedding': 0x202b, 'pop directional formatting': 0x202c, 'left-to-right isolate': 0x2066,
+    'right-to-left isolate': 0x2067, 'first strong isolate': 0x2068, 'pop directional isolate': 0x2069,
+    'left-to-right mark': 0x200e, 'right-to-left mark': 0x200f, 'arabic letter mark': 0x061c,
+    'zero-width space': 0x200b, 'word joiner': 0x2060, 'invisible times': 0x2062, 'invisible separator': 0x2063,
+    'deprecated format character': 0x206a, 'byte order mark': 0xfeff, 'mongolian vowel separator': 0x180e,
+    'tag latin capital A': 0xe0041, 'tag cancel': 0xe007f,
+  };
+  for (const [label, code] of Object.entries(mustStrip)) {
+    const got = sanitize('a' + cp(code) + 'b');
+    check('sanitize strips the ' + label + ' (U+' + code.toString(16).toUpperCase() + ')', got === 'ab', show(got));
+  }
+
+  const mustKeep = {
+    'zero-width joiner in an emoji sequence': cp(0x1f468, 0x200d, 0x1f469, 0x200d, 0x1f467),
+    'emoji variation selector': cp(0x2764, 0xfe0f),
+    'zero-width non-joiner (Persian)': cp(0x0645, 0x06cc, 0x200c, 0x062e, 0x0648, 0x0627, 0x0647, 0x0645),
+    'a combining accent': 'e' + cp(0x0301),
+    'CJK text': cp(0x65e5, 0x672c, 0x8a9e),
+    'a regional-indicator flag': cp(0x1f1fa, 0x1f1f8),
+    'a rocket': cp(0x1f680),
+    'plain ASCII': 'ampline-claude 0.7',
+  };
+  for (const [label, text] of Object.entries(mustKeep)) {
+    const got = sanitize(text);
+    check('sanitize keeps ' + label, got === text, show(got));
+  }
+
+  // The stripped characters must not come back through any rendered field.
+  const BIDI = cp(0x202e, 0x2066, 0x200b, 0xfeff, 0xe0041, 0x200f);
+  const reachesStdout = (out) => Array.from(String(out)).some((c) => {
+    const n = c.codePointAt(0);
+    return n === 0x202e || (n >= 0x202a && n <= 0x202e) || (n >= 0x2066 && n <= 0x2069) || n === 0x200b ||
+      n === 0x200e || n === 0x200f || n === 0xfeff || n === 0x2060 || (n >= 0xe0000 && n <= 0xe007f);
+  });
+  const SGR = /\x1b\[[0-9;]*m/g;
+  const model = { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' };
+  const out = (payload, extra) => {
+    const r = spawnRender(JSON.stringify(payload), extra || {});
+    return { status: r.status, text: r.stdout || '' };
+  };
+  const cases = {
+    'repo name': inlinePayload({ model, workspace: { repo: { name: 'proj' + BIDI + 'evil' }, current_dir: '/tmp/p' } }),
+    'directory basename': inlinePayload({ model, workspace: { current_dir: '/tmp/proj' + BIDI + 'evil' } }),
+    'model display name': inlinePayload({ model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet' + BIDI + ' 5.5' } }),
+    'model id fallback': inlinePayload({ model: { id: 'claude-sonnet' + BIDI + '-5-5' } }),
+    'subagent-independent separator': inlinePayload({ model }),
+  };
+  for (const [label, payload] of Object.entries(cases)) {
+    const r = out(payload);
+    check(label + ' carries no bidirectional or invisible character to stdout',
+      r.status === 0 && !reachesStdout(r.text), show(r.text.replace(SGR, '')).slice(0, 200));
+  }
+  const evilRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-bidi-repo-'));
+  try {
+    fs.mkdirSync(path.join(evilRepo, '.git'));
+    fs.writeFileSync(path.join(evilRepo, '.git', 'HEAD'), 'ref: refs/heads/main' + BIDI + 'evil\n', 'utf8');
+    const r = out(inlinePayload({ model, workspace: { current_dir: evilRepo } }));
+    check('a branch name with a bidirectional override is neutralized, and still shown',
+      r.status === 0 && !reachesStdout(r.text) && r.text.replace(SGR, '').includes('mainevil'), r.text.replace(SGR, '').slice(0, 160));
+  } finally {
+    try { fs.rmSync(evilRepo, { recursive: true, force: true }); } catch {}
+  }
+  const todoSeed = (home) => {
+    const dir = path.join(home, '.claude', 'todos');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'bidi-session.json'), JSON.stringify([{ status: 'in_progress', activeForm: 'Run' + BIDI + 'tests' }]), 'utf8');
+  };
+  const t = out(inlinePayload({ model, session_id: 'bidi-session' }), { seed: todoSeed });
+  check('todo text with a bidirectional override is neutralized, and still shown',
+    t.status === 0 && !reachesStdout(t.text) && t.text.replace(SGR, '').includes('Runtests'), t.text.replace(SGR, '').slice(0, 160));
+
+  // A name that is only invisible characters is blank on screen and must fall back, not print.
+  const blank = out(inlinePayload({ model, workspace: { repo: { name: cp(0x200b, 0x202e, 0xfeff) }, current_dir: '/tmp/realdir' } }));
+  check('a repo name made only of invisible characters falls back to the directory name',
+    blank.status === 0 && blank.text.replace(SGR, '').startsWith('realdir'), show(blank.text.replace(SGR, '')).slice(0, 120));
+
+  // ---- cell width: the wrap decision must match what the terminal actually draws ----
+  const w = (str) => visibleWidth(str);
+  check('a rocket is two cells', w(cp(0x1f680)) === 2, String(w(cp(0x1f680))));
+  check('fifteen rockets are thirty cells', w(cp(0x1f680).repeat(15)) === 30, String(w(cp(0x1f680).repeat(15))));
+  check('a symbols-and-pictographs extended-A emoji is two cells', w(cp(0x1fa80)) === 2, String(w(cp(0x1fa80))));
+  check('a transport emoji at the end of its block is two cells', w(cp(0x1f6fc)) === 2, String(w(cp(0x1f6fc))));
+  check('a CJK ideograph is two cells', w(cp(0x65e5)) === 2, String(w(cp(0x65e5))));
+  check('plain ASCII is one cell each', w('abc') === 3, String(w('abc')));
+  check('a combining accent adds no cell', w('e' + cp(0x0301)) === 1, String(w('e' + cp(0x0301))));
+  check('a zero-width space adds no cell', w('a' + cp(0x200b).repeat(30)) === 1, String(w('a' + cp(0x200b).repeat(30))));
+  check('a tag character adds no cell', w('a' + cp(0xe0041, 0xe007f)) === 1, String(w('a' + cp(0xe0041, 0xe007f))));
+  check('a ZWJ emoji sequence is not wider than its parts', w(cp(0x1f468, 0x200d, 0x1f469)) === 4, String(w(cp(0x1f468, 0x200d, 0x1f469))));
+  check('a variation selector adds no cell', w(cp(0x2764, 0xfe0f)) === 1, String(w(cp(0x2764, 0xfe0f))));
+}
+
+// ---- Source files must not hide text from a reader ("Trojan Source") -----------------
+// A bidirectional override or a zero-width character inside a source file or document makes
+// the code a reviewer sees differ from the code that runs. None belong in this repository.
+function runSourceHygieneTests() {
+  const roots = ['bin', 'lib', 'test', 'scripts', '.github', 'diagrams'];
+  const rootFiles = ['README.md', 'CHANGELOG.md', 'CLAUDE.md', 'DECISIONS.md', 'SECURITY.md', 'package.json', 'LICENSE'];
+  const exts = new Set(['.js', '.json', '.md', '.yml', '.yaml', '.example']);
+  const files = [];
+  const walk = (dir) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== 'node_modules' && e.name !== '.git') walk(p); }
+      else if (exts.has(path.extname(e.name)) || e.name === 'LICENSE') files.push(p);
+    }
+  };
+  for (const r of roots) walk(path.join(ROOT, r));
+  for (const f of rootFiles) { const p = path.join(ROOT, f); if (fs.existsSync(p)) files.push(p); }
+
+  const bad = (n) => (n >= 0x202a && n <= 0x202e) || (n >= 0x2066 && n <= 0x2069) || n === 0x200b ||
+    n === 0x200e || n === 0x200f || n === 0x061c || n === 0xfeff || n === 0x2060 || n === 0x2028 || n === 0x2029 ||
+    (n >= 0xe0000 && n <= 0xe007f);
+  const hits = [];
+  for (const f of files) {
+    let text = '';
+    try { text = fs.readFileSync(f, 'utf8'); } catch { continue; }
+    let line = 1;
+    for (const ch of text) {
+      const n = ch.codePointAt(0);
+      if (ch === '\n') line++;
+      if (bad(n)) hits.push(path.relative(ROOT, f) + ':' + line + ' U+' + n.toString(16).toUpperCase());
+    }
+  }
+  if (hits.length === 0) console.log('  ok    source hygiene: no bidirectional or invisible characters in ' + files.length + ' tracked source and doc files');
+  else fail('source hygiene: invisible or bidirectional characters found', hits.slice(0, 12).join(', '));
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -1345,6 +1492,8 @@ function main() {
   runSubagentContractTests();
   runInjectionTests();
   runInjectionFollowupTests();
+  runInvisibleCharacterTests();
+  runSourceHygieneTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();

@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing uses its id, and a blank repo name uses the directory name. Repo and directory names
   are capped at 40 characters. Subagent rows ignore names and token counts that are not the
   right type.
+- **Bidirectional and invisible characters are stripped from names.** A right-to-left override
+  in a directory or branch name could reorder the rest of the line on a bidi-capable terminal,
+  and zero-width or tag characters could blank a name or hide text. Zero-width joiners and
+  variation selectors are kept, so emoji sequences still work. Cell width now counts rockets and
+  other newer emoji as two cells and combining or zero-width characters as none, so the line
+  wraps when it should. A test now fails if such a character appears in the source. See
+  `DECISIONS.md` D43.
 
 ## [0.6.0] - 2026-10-07
 

@@ -1005,3 +1005,47 @@ bound), so they are mutated together. **Not covered, and handled separately:** b
 override and zero-width characters, which `sanitize()` does not strip, and the width of
 characters outside the old wide-character ranges. The suite is also green with `NO_COLOR`
 exported in the developer's shell.
+
+### D43. `sanitize()` also strips bidirectional and invisible characters, and cell width counts them right
+
+D42 recorded these as not covered. A terminal control sequence is not the only way foreign text
+can mislead a reader, and `sanitize()` removed only C0, DEL, C1 and the two line separators.
+
+- **Bidirectional controls** (U+202A to U+202E, U+2066 to U+2069, U+200E, U+200F, U+061C). An
+  unterminated right-to-left override sitting in the directory or branch, which come first on
+  the line, reorders everything after it on a bidi-capable terminal: the model name, the usage
+  bars and the countdown. Windows Terminal and conhost do no bidi, so this is not visible there.
+  The bytes were shown to reach stdout; **the reordering itself was not observed**, because no
+  bidi terminal was available here.
+- **Zero-width characters** (U+200B, U+2060 to U+2064, U+FEFF, U+180E). A name made only of them
+  is blank on screen, and counted one cell each, so thirty of them made the line wrap early.
+- **Tag characters** (U+E0000 to U+E007F). Invisible, and able to carry a hidden ASCII payload
+  that anything reading the terminal text, a screen reader or a model, would still see.
+
+**Decision.** All of the above are stripped by `sanitize()`, built from code points so that no
+invisible character appears in the source. **Kept on purpose:** the zero-width joiner (U+200D),
+the zero-width non-joiner (U+200C) and the variation selectors. Emoji sequences and Persian text
+need them, and none of them can reorder or hide a run of text. Cell width now treats combining
+marks, zero-width, format and tag characters as zero cells, and counts the transport (U+1F680 to
+U+1F6FF) and extended pictograph (U+1FA70 to U+1FAFF) emoji blocks as two. A few code points in
+the transport block are narrow; over-counting only makes the line wrap earlier, which is the
+safe direction. The table is still not full UAX #11.
+
+**A guard against the same trick in this repository.** A bidirectional override inside a source
+file makes the code a reviewer sees differ from the code that runs ("Trojan Source"). The suite
+now scans tracked source and documentation for these characters and fails if it finds one.
+Writing this change surfaced a related hazard: a typed `\u2028` in a source file or a command
+can arrive as the real character, which JavaScript treats as a line break inside a regular
+expression. Every such character in the code and the tests is built from a code point instead.
+
+**Rejected:**
+- *Stripping the whole Unicode format category (Cf).* It would remove the joiners and break
+  emoji and Persian text.
+- *Normalizing names (NFC) or restricting them to an allowlist of scripts.* That changes text the
+  user wrote, or rejects legitimate names.
+
+**What is verified and what is not (2026-10-14).** Each stripped range, each kept character,
+each rendered field and a hostile `.git/HEAD` and todo are covered by tests, and a mutation
+matrix that un-strips each range, over-strips the joiners, and removes each width range fails
+the suite. **Not verified:** the visual reordering on a real bidi terminal, and the width of
+code points outside the ranges listed, since the table is deliberately minimal.

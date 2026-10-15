@@ -100,7 +100,7 @@ lib/colors.js    fg(r,g,b) · RESET · BOLD · DIM · EFFORT_ORDER · WHEEL
                  normalizeModelFamily(modelId, displayName) -> family | null
                  normalizeEffortLevel(level) -> level | null      <- null, never a default
                  colorsEnabled() -> boolean · stripAnsi(s) -> string
-                 sanitize(s) -> string   <- strips C0/C1 controls + U+2028/U+2029
+                 sanitize(s) -> string   <- strips C0/C1 controls, line separators, bidi and zero-width characters (D43)
 
 lib/claudeDir.js claudeDir() -> string   <- CLAUDE_CONFIG_DIR override or ~/.claude
 
