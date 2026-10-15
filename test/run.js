@@ -938,6 +938,394 @@ function runSubagentContractTests() {
     renderSubagentLine(null) === '' && renderSubagentLine({}) === '', 'expected empty');
 }
 
+// ---- Foreign strings must never reach stdout as control sequences ------------
+// Every value below arrives from outside: the model (display names, todo text), the repo
+// (branch names in .git/HEAD, directory names) or Claude Code itself. Terminal escape
+// sequences are a live injection vector (CLAUDE.md), so the invariant is checked on the whole
+// line: once our own SGR color codes are removed, no control sequence may remain.
+function runInjectionTests() {
+  const SGR = /\x1b\[[0-9;]*m/g;
+  const C1 = new RegExp('[' + String.fromCharCode(0x80) + '-' + String.fromCharCode(0x9f) + ']');
+  const LS = String.fromCharCode(0x2028);
+  const PS = String.fromCharCode(0x2029);
+  const NUL = String.fromCharCode(0);
+  const leaks = (out) => {
+    const rest = String(out).replace(SGR, '');
+    const found = [];
+    if (rest.includes(ESC)) found.push('ESC');
+    if (rest.includes(BEL)) found.push('BEL');
+    if (C1.test(rest)) found.push('C1');
+    if (rest.includes(LS) || rest.includes(PS)) found.push('line-separator');
+    if (rest.includes(NUL)) found.push('NUL');
+    return found;
+  };
+  const HOSTILE = 'x' + ESC + ']0;pwned' + BEL + ESC + '[2J' + ESC + ']8;;http://evil.example' + BEL + 'y' +
+    String.fromCharCode(0x9b) + '31m' + LS + 'z' + PS + NUL + 'end';
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    injection: ' + name);
+    else fail('injection: ' + name, detail);
+  };
+  const render = (payload, extra) => {
+    const r = spawnRender(JSON.stringify(payload), extra || {});
+    return { r, out: r.stdout || '' };
+  };
+  // A hostile value must leave nothing behind, and the run must still be clean.
+  const noLeak = (name, payload, extra) => {
+    const { r, out } = render(payload, extra);
+    const found = leaks(out);
+    check(name + ': exits 0 with no control sequence in stdout', r.status === 0 && found.length === 0,
+      JSON.stringify({ status: r.status, found, out: out.slice(0, 240) }));
+    return out;
+  };
+  const plain = (out) => String(out).replace(SGR, '');
+
+  // ---- dir ----
+  noLeak('dir from workspace.repo.name', inlinePayload({ workspace: { repo: { name: HOSTILE }, current_dir: '/tmp/p' } }));
+  noLeak('dir from the basename of current_dir', inlinePayload({ workspace: { current_dir: '/tmp/' + HOSTILE } }));
+  noLeak('dir from cwd', inlinePayload({ cwd: '/tmp/' + HOSTILE }));
+  for (const [label, name] of [['an object', { a: 1 }], ['an array', ['x']], ['a number', 5], ['a boolean', true]]) {
+    const out = plain(noLeak('repo.name as ' + label, inlinePayload({ workspace: { repo: { name }, current_dir: '/tmp/realdir' } })));
+    check('repo.name as ' + label + ' falls back to the directory name',
+      out.includes('realdir') && !/\[object|\btrue\b/.test(out), JSON.stringify(out.slice(0, 160)));
+  }
+  for (const [label, current_dir] of [['a number', 5], ['an object', { a: 1 }], ['an array', ['/tmp/x']]]) {
+    const out = plain(noLeak('current_dir as ' + label, inlinePayload({ workspace: { current_dir }, cwd: undefined })));
+    check('current_dir as ' + label + ' does not print object text', !/\[object/.test(out), JSON.stringify(out.slice(0, 160)));
+  }
+
+  // ---- model ----
+  noLeak('model.display_name', inlinePayload({ model: { id: 'claude-sonnet-5-5', display_name: HOSTILE } }));
+  noLeak('model.id with no display_name', inlinePayload({ model: { id: HOSTILE } }));
+  noLeak('effort.level', inlinePayload({ model: { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' }, effort: { level: HOSTILE } }));
+  for (const [label, display_name] of [['an object', { a: 1 }], ['an array', ['x']], ['a number', 5], ['a boolean', true]]) {
+    const out = plain(noLeak('display_name as ' + label, inlinePayload({ model: { id: 'claude-sonnet-5-5', display_name } })));
+    check('display_name as ' + label + ' falls back to the model id',
+      /sonnet/i.test(out) && !/\[object|\btrue\b/.test(out), JSON.stringify(out.slice(0, 160)));
+  }
+  const noName = plain(noLeak('display_name object and no id', inlinePayload({ model: { display_name: { a: 1 } } })));
+  check('an unusable model prints nothing for the model segment', !/\[object/.test(noName), JSON.stringify(noName.slice(0, 160)));
+
+  // ---- cost: numbers from outside are digits, never e-notation or a stray sign ----
+  const costOut = (cost) => plain(noLeak('cost ' + JSON.stringify(cost), inlinePayload({ cost })));
+  const good = costOut({ total_cost_usd: 1.5, total_lines_added: 10, total_lines_removed: 2 });
+  check('a normal cost still renders', good.includes('$1.50') && good.includes('+10') && good.includes('-2'), JSON.stringify(good));
+  const badCosts = [
+    ['a string', { total_cost_usd: '12.5' }, /12\.5/],
+    ['e-notation', { total_cost_usd: 1e21 }, /e\+/],
+    ['negative', { total_cost_usd: -5 }, /\$-/],
+    ['absurdly large', { total_cost_usd: 1e15 }, /\$1000000000000000/],
+  ];
+  for (const [label, cost, bad] of badCosts) {
+    const out = costOut(cost);
+    check('cost as ' + label + ' is not printed', !bad.test(out), JSON.stringify(out.slice(0, 160)));
+  }
+  const badLines = [
+    ['e-notation', { total_lines_added: 1e21, total_lines_removed: 0 }, /e\+/],
+    ['negative', { total_lines_added: -3, total_lines_removed: -4 }, /\+-|--/],
+    ['fractional', { total_lines_added: 1.5, total_lines_removed: 2.25 }, /1\.5|2\.25/],
+    ['strings', { total_lines_added: '7', total_lines_removed: '9' }, /\+7|-9/],
+  ];
+  for (const [label, cost, bad] of badLines) {
+    const out = costOut(cost);
+    check('lines changed as ' + label + ' is not printed', !bad.test(out), JSON.stringify(out.slice(0, 160)));
+  }
+
+  // ---- context and rate limits ----
+  const ctxStr = plain(noLeak('context used_percentage as a string', inlinePayload({ context_window: { used_percentage: '50' } })));
+  check('a string percentage draws no context bar', !/C\d/.test(ctxStr), JSON.stringify(ctxStr.slice(0, 160)));
+  noLeak('context used_percentage hostile', inlinePayload({ context_window: { used_percentage: HOSTILE } }));
+  noLeak('rate limit fields hostile', inlinePayload({
+    rate_limits: { five_hour: { used_percentage: HOSTILE, resets_at: HOSTILE }, seven_day: { used_percentage: HOSTILE, resets_at: HOSTILE } },
+  }));
+
+  // ---- git: a repository you did not write controls .git/HEAD ----
+  const makeRepo = (headText) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-evil-repo-'));
+    fs.mkdirSync(path.join(dir, '.git'));
+    fs.writeFileSync(path.join(dir, '.git', 'HEAD'), headText, 'utf8');
+    return dir;
+  };
+  const evilRepos = [];
+  try {
+    // The branch is read with /^ref:\s*refs\/heads\/(.+)$/ and "." does not match U+2028 or
+    // U+2029, so a name containing them is never read at all. A real attacker leaves those out,
+    // and so must this test, or sanitize() is never reached and the test passes vacuously.
+    const branchHostile = HOSTILE.split(LS).join('').split(PS).join('');
+    const headRef = makeRepo('ref: refs/heads/' + branchHostile + '\n');
+    evilRepos.push(headRef);
+    const hostileOut = noLeak('branch name from a hostile .git/HEAD', inlinePayload({ workspace: { current_dir: headRef } }));
+    const out = plain(hostileOut);
+    check('the hostile branch name is actually rendered, as inert text',
+      out.includes('⎇') && out.includes('pwned'), JSON.stringify(out.slice(0, 200)));
+    check('the rendered branch carries no escape byte', !hostileOut.replace(SGR, '').includes(ESC), JSON.stringify(hostileOut.slice(0, 200)));
+
+    const gitFile = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-evil-gitfile-'));
+    evilRepos.push(gitFile);
+    fs.writeFileSync(path.join(gitFile, '.git'), 'gitdir: ' + HOSTILE + '\n', 'utf8');
+    noLeak('a .git file whose gitdir is hostile', inlinePayload({ workspace: { current_dir: gitFile } }));
+
+    const detached = makeRepo(HOSTILE + '\n');
+    evilRepos.push(detached);
+    noLeak('a detached HEAD that is not a hash', inlinePayload({ workspace: { current_dir: detached } }));
+
+    // The git segment picks its directory the same way the dir segment does: an unusable
+    // current_dir must fall back to cwd rather than dropping the segment.
+    const real = makeRepo('ref: refs/heads/feature-x\n');
+    evilRepos.push(real);
+    for (const [label, current_dir] of [['a number', 5], ['an object', { a: 1 }], ['an empty string', '']]) {
+      const out = plain(noLeak('git with current_dir as ' + label, inlinePayload({ workspace: { current_dir }, cwd: real })));
+      check('git falls back to cwd when current_dir is ' + label, out.includes('feature-x'), JSON.stringify(out.slice(0, 200)));
+    }
+  } finally {
+    for (const d of evilRepos) { try { fs.rmSync(d, { recursive: true, force: true }); } catch {} }
+  }
+
+  // ---- task: todo text comes from model output ----
+  const seedTodos = (home) => {
+    const dir = path.join(home, '.claude', 'todos');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'inj-session-agent-1.json'),
+      JSON.stringify([{ status: 'in_progress', activeForm: HOSTILE, content: HOSTILE }]), 'utf8');
+  };
+  const todoOut = noLeak('todo text', inlinePayload({ session_id: 'inj-session' }), { seed: seedTodos });
+  // The text is cut to 40 characters, so the tail ("end") is gone; what remains is inert text.
+  check('the todo text segment still renders its visible part, inert', plain(todoOut).includes('pwned'),
+    JSON.stringify(plain(todoOut).slice(0, 200)));
+
+  // ---- session_id is a lookup key into ~/.claude/todos and into the cache ----
+  const sessionIds = {
+    'a parent-directory path': '../../etc/passwd',
+    'a glob': 'a*?[]',
+    'a path separator': 'x/y\\z',
+    'hostile control bytes': HOSTILE,
+    'an empty string': '',
+    'a number': 12345,
+    'an object': { a: 1 },
+    'an array': ['a', 'b'],
+    'a 5000 character string': 'a'.repeat(5000),
+  };
+  for (const [label, sid] of Object.entries(sessionIds)) {
+    noLeak('session_id as ' + label, inlinePayload({ session_id: sid }), { seed: seedTodos });
+  }
+
+  // ---- everything at once, colors on and off ----
+  const sink = inlinePayload({
+    session_id: 'inj-session',
+    cwd: '/tmp/' + HOSTILE,
+    model: { id: HOSTILE, display_name: HOSTILE },
+    effort: { level: HOSTILE },
+    workspace: { current_dir: '/tmp/' + HOSTILE, repo: { name: HOSTILE } },
+    context_window: { used_percentage: 55 },
+    rate_limits: { five_hour: { used_percentage: 61, resets_at: Math.floor(Date.now() / 1000) + 3 * 3600 } },
+    cost: { total_cost_usd: 2.5, total_lines_added: 3, total_lines_removed: 1 },
+    pr: { number: 7, url: 'https://evil.example/' + HOSTILE, review_state: HOSTILE, kind: HOSTILE },
+  });
+  const loud = noLeak('kitchen sink, colors on', sink, { seed: seedTodos });
+  check('kitchen sink still renders a line', plain(loud).length > 0, JSON.stringify(plain(loud)));
+  const quiet = noLeak('kitchen sink, NO_COLOR', sink, { seed: seedTodos, env: { NO_COLOR: '1' } });
+  check('kitchen sink under NO_COLOR has no escape byte at all', !quiet.includes(ESC), JSON.stringify(quiet.slice(0, 200)));
+}
+
+// ---- Follow-ups from the independent review of the injection suite --------------
+// Several of these pin behavior that was correct but untested (the review's surviving
+// mutants), and several are real defects it found: Number() coercion of rate limits, a cached
+// non-string todo, session id prefix matching, an unbounded regex, and subagent type checks.
+// Renders in sequence against ONE home, because the cache is exactly what several of them are about.
+function renderSequence(payloads, { seed, env, cwd } = {}) {
+  const home = makeTempHome();
+  if (seed) seed(home);
+  const base = { ...process.env };
+  delete base.NO_COLOR;
+  delete base.FORCE_COLOR;
+  const results = [];
+  try {
+    for (const p of payloads) {
+      const r = spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(p), encoding: 'utf8', timeout: 20000, cwd,
+        env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200', ...(env || {}) },
+      });
+      results.push({ status: r.status, out: r.stdout || '' });
+    }
+  } finally {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+  }
+  return results;
+}
+
+function runInjectionFollowupTests() {
+  const { visibleWidth } = require('../lib/layout');
+  const SGR = /\x1b\[[0-9;]*m/g;
+  const plain = (o) => String(o).replace(SGR, '');
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    review follow-up: ' + name);
+    else fail('review follow-up: ' + name, detail);
+  };
+  const nowS = Math.floor(Date.now() / 1000);
+  const DEL = String.fromCharCode(0x7f);
+  const BELC = String.fromCharCode(7);
+  const model = { id: 'claude-sonnet-5-5', display_name: 'Sonnet 5.5' };
+
+  // F1: rate limits were coerced with Number(), so null, "", false and [] became a fabricated 0%.
+  const rl = (used) => inlinePayload({ model, rate_limits: { five_hour: { used_percentage: used, resets_at: nowS + 3 * 3600 } } });
+  for (const [label, used] of [['null', null], ['an empty string', ''], ['false', false], ['an empty array', []],
+    ['true', true], ['a one-element array', [5]], ['a numeric string', '50'], ['a hex string', '0x1F'],
+    ['an exponent string', '1e1'], ['a padded string', ' 7 '], ['an object', {}]]) {
+    const [first, second] = renderSequence([rl(used), inlinePayload({ model })]);
+    check('used_percentage as ' + label + ' draws no bar and leaves no cache behind',
+      first.status === 0 && !/H\d/.test(plain(first.out)) && !/H\d/.test(plain(second.out)),
+      JSON.stringify({ first: plain(first.out), second: plain(second.out) }));
+  }
+  const real = renderSequence([rl(42)])[0];
+  check('a real number still draws the bar', /H42 /.test(plain(real.out)), JSON.stringify(plain(real.out)));
+  const far = renderSequence([inlinePayload({ model, rate_limits: { five_hour: { used_percentage: 40, resets_at: nowS + 90 * 86400 } } })])[0];
+  check('a reset more than 60 days out is not trusted: no countdown or marker, bar kept',
+    /H40 /.test(plain(far.out)) && !/↺|┃/.test(plain(far.out)), JSON.stringify(plain(far.out)));
+
+  // F2: a non-string todo was cached by the first render and printed by the second.
+  const todoSeed = (value) => (home) => {
+    const dir = path.join(home, '.claude', 'todos');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fu-session-agent-1.json'), JSON.stringify([{ status: 'in_progress', activeForm: value }]), 'utf8');
+  };
+  const sidPayload = (sid) => inlinePayload({ session_id: sid, model });
+  for (const [label, value] of [['an object', { a: 1 }], ['a number', 12345], ['a boolean', true], ['an array', ['x']]]) {
+    const outs = renderSequence([sidPayload('fu-session'), sidPayload('fu-session'), sidPayload('fu-session')], { seed: todoSeed(value) });
+    const joined = outs.map((o) => plain(o.out)).join(' || ');
+    check('todo text as ' + label + ' never prints, on any render',
+      outs.every((o) => o.status === 0) && !/\[object|12345|\btrue\b|\bx\b/.test(joined.replace(/Sonnet 5\.5/g, '')), JSON.stringify(joined));
+  }
+  const goodTodo = renderSequence([sidPayload('fu-session'), sidPayload('fu-session')], { seed: todoSeed('Run the tests') });
+  check('a real todo still renders, fresh and from cache', goodTodo.every((o) => plain(o.out).includes('Run the tests')),
+    JSON.stringify(goodTodo.map((o) => plain(o.out))));
+
+  // F3: session ids select todo files by prefix and double as cache keys.
+  const twoSessions = (home) => {
+    const dir = path.join(home, '.claude', 'todos');
+    fs.mkdirSync(dir, { recursive: true });
+    const put = (name, text) => fs.writeFileSync(path.join(dir, name), JSON.stringify([{ status: 'in_progress', activeForm: text }]), 'utf8');
+    put('aaaa1111-0000-4000-8000-000000000001-agent-aaaa1111-0000-4000-8000-000000000001.json', 'SECRET of session A');
+    put('bbbb2222-0000-4000-8000-000000000002-agent-bbbb2222-0000-4000-8000-000000000002.json', 'SECRET of session B');
+    put('x_1-agent-1.json', 'task of x_1');
+    put('x:1-agent-1.json', 'task of x colon 1');
+  };
+  for (const sid of ['a', 'aaaa', 'b', 'aaaa1111', '']) {
+    const o = renderSequence([sidPayload(sid)], { seed: twoSessions })[0];
+    check('session_id ' + JSON.stringify(sid) + ' does not surface another session\'s task',
+      o.status === 0 && !/SECRET/.test(plain(o.out)), JSON.stringify(plain(o.out)));
+  }
+  for (const [label, sid] of [['an array', ['a']], ['a number', 12345], ['an object', { a: 1 }]]) {
+    const o = renderSequence([sidPayload(sid)], { seed: twoSessions })[0];
+    check('session_id as ' + label + ' surfaces nothing', o.status === 0 && !/SECRET/.test(plain(o.out)), JSON.stringify(plain(o.out)));
+  }
+  const keyed = renderSequence([sidPayload('x_1'), sidPayload('x:1'), sidPayload('x/1')], { seed: twoSessions });
+  check('ids that slug to the same cache key do not share a task',
+    plain(keyed[0].out).includes('task of x_1') && !/task of x/.test(plain(keyed[1].out)) && !/task of x/.test(plain(keyed[2].out)),
+    JSON.stringify(keyed.map((k) => plain(k.out))));
+  const own = renderSequence([sidPayload('aaaa1111-0000-4000-8000-000000000001')], { seed: twoSessions })[0];
+  check('the exact session id still finds its own task', plain(own.out).includes('SECRET of session A'), JSON.stringify(plain(own.out)));
+
+  // F4: a name that is empty after cleaning must fall back, not print an empty colored segment.
+  const emptyNames = [
+    ['a BEL display_name', { id: 'claude-sonnet-5-5', display_name: BELC }],
+    ['a lone "Claude " display_name', { id: 'claude-sonnet-5-5', display_name: 'Claude ' }],
+    ['a whitespace display_name', { id: 'claude-sonnet-5-5', display_name: '    ' }],
+  ];
+  for (const [label, m] of emptyNames) {
+    const o = renderSequence([inlinePayload({ model: m, workspace: { current_dir: '/tmp/realdir' } })])[0];
+    const p = plain(o.out);
+    check(label + ' falls back to the id and leaves no empty segment', /sonnet/i.test(p) && !/│\s*│/.test(p) && !/│\s*$/.test(p),
+      JSON.stringify(p));
+  }
+  const blankRepo = renderSequence([inlinePayload({ model, workspace: { repo: { name: '   ' }, current_dir: '/tmp/realdir' } })])[0];
+  check('a blank repo name falls back to the directory name', plain(blankRepo.out).startsWith('realdir'), JSON.stringify(plain(blankRepo.out)));
+  for (const [label, text] of [['a control-only todo', BELC], ['a whitespace todo', '    ']]) {
+    const o = renderSequence([sidPayload('fu-session')], { seed: todoSeed(text) })[0];
+    const p = plain(o.out);
+    check(label + ' is omitted, with no doubled or trailing separator', !/│\s*│/.test(p) && !/│\s*$/.test(p), JSON.stringify(p));
+  }
+
+  // F5: the subagent path took any type.
+  const subPayload = (task) => ({ columns: 120, tasks: [{ id: 'a', status: 'running', ...task }] });
+  const subContent = (task) => {
+    const r = subagentRun(subPayload(task)).rows[0];
+    return r && typeof r.content === 'string' ? plain(r.content) : '';
+  };
+  for (const [label, task] of [
+    ['an object label', { label: { x: 1 } }], ['an array label', { label: ['hello'] }], ['a numeric description', { description: 12345 }],
+    ['an object model id', { label: 'ok', model: { id: { y: 2 } } }], ['an object status', { label: 'ok', status: { z: 1 } }],
+  ]) {
+    const c = subContent(task);
+    check('subagent ' + label + ' prints no object text, digits or booleans',
+      c.length > 0 && !/\[object|hello|12345/.test(c), JSON.stringify(c));
+  }
+  for (const [label, tokenCount] of [['true', true], ['a numeric string', '5000'], ['an object', { n: 1 }], ['negative', -5]]) {
+    const c = subContent({ label: 'ok', tokenCount });
+    check('subagent tokenCount as ' + label + ' is not shown', !/\b1\b|5k|5000|-5/.test(c.replace('ok', '')), JSON.stringify(c));
+  }
+  check('a real token count still shows', /14k/.test(subContent({ label: 'ok', tokenCount: 14046 })), JSON.stringify(subContent({ label: 'ok', tokenCount: 14046 })));
+
+  // F6: shortenModel used an unanchored regex that starts with \s*, quadratic on whitespace runs.
+  for (const n of [100000, 400000]) {
+    const t0 = Date.now();
+    const o = renderSequence([inlinePayload({ model: { id: 'claude-sonnet-5-5', display_name: 'a' + ' '.repeat(n) } })])[0];
+    const ms = Date.now() - t0;
+    check('a ' + n + ' space display_name renders promptly', o.status === 0 && ms < 4000, 'status=' + o.status + ' ms=' + ms);
+  }
+  const ctxName = (dn) => plain(renderSequence([inlinePayload({ model: { id: 'claude-opus-5-5', display_name: dn } })])[0].out);
+  check('a trailing context note is still removed', ctxName('Opus 4.5 (1M context)').includes('Opus 4.5 │') && !/context/.test(ctxName('Opus 4.5 (1M context)')),
+    JSON.stringify(ctxName('Opus 4.5 (1M context)')));
+  check('a context note mid-name is removed without leaving a double space', !/context|\s{2}/.test(ctxName('Claude Opus (200k context) 4.5').split('│')[1] || ''),
+    JSON.stringify(ctxName('Claude Opus (200k context) 4.5')));
+
+  // F9 and the length caps nothing pinned: dir, model, task and branch are all bounded.
+  const longRepo = plain(renderSequence([inlinePayload({ model, workspace: { repo: { name: 'r'.repeat(500) }, current_dir: '/tmp/p' } })])[0].out);
+  check('a very long repo name is capped with an ellipsis', longRepo.includes('r'.repeat(39) + '…') && !longRepo.includes('r'.repeat(41)),
+    JSON.stringify(longRepo.slice(0, 120)));
+  const longModel = plain(renderSequence([inlinePayload({ model: { id: 'claude-sonnet-5-5', display_name: 'm'.repeat(100) } })])[0].out);
+  check('a very long model name is capped at 32', longModel.includes('m'.repeat(31) + '…') && !longModel.includes('m'.repeat(33)), JSON.stringify(longModel.slice(0, 120)));
+  const longTask = plain(renderSequence([sidPayload('fu-session')], { seed: todoSeed('t'.repeat(200)) })[0].out);
+  check('a very long todo is capped at 40', longTask.includes('t'.repeat(39) + '…') && !longTask.includes('t'.repeat(41)), JSON.stringify(longTask.slice(0, 160)));
+
+  // DEL is a control character like the rest.
+  const delName = plain(renderSequence([inlinePayload({ model, workspace: { repo: { name: 'ab' + DEL + 'cd' }, current_dir: '/tmp/p' } })])[0].out);
+  check('DEL is stripped from a name', delName.includes('abcd') && !delName.includes(DEL), JSON.stringify(delName.slice(0, 80)));
+
+  // Directory fallbacks must be provable, not just "no [object" (the review's M1, M2, M8).
+  const viaCwd = plain(renderSequence([inlinePayload({ model, workspace: { current_dir: 5 }, cwd: '/tmp/fallbackdir' })])[0].out);
+  check('an unusable current_dir uses cwd for the directory name', viaCwd.startsWith('fallbackdir'), JSON.stringify(viaCwd.slice(0, 80)));
+  // With no directory fields at all, both the dir and git segments use the PROCESS directory.
+  // The child gets its own throwaway repo as its working directory, so this holds whether or not
+  // the checkout running the tests is itself a git repository (a copied tree has no .git).
+  const procRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-procdir-'));
+  try {
+    fs.mkdirSync(path.join(procRepo, '.git'));
+    fs.writeFileSync(path.join(procRepo, '.git', 'HEAD'), 'ref: refs/heads/process-dir-branch\n', 'utf8');
+    const neither = plain(renderSequence([{ model, session_id: 'inline' }], { cwd: procRepo })[0].out);
+    check('with no directory fields the dir segment falls back to the process directory',
+      neither.startsWith(path.basename(procRepo)), JSON.stringify({ got: neither.slice(0, 80), want: path.basename(procRepo) }));
+    check('and the git segment falls back to it as well', neither.includes('process-dir-branch'), JSON.stringify(neither.slice(0, 160)));
+  } finally {
+    try { fs.rmSync(procRepo, { recursive: true, force: true }); } catch {}
+  }
+
+  // Cost counts: 1e20 is a finite integer that is not a safe one and would print as 21 digits.
+  const big = plain(renderSequence([inlinePayload({ model, cost: { total_lines_added: 1e20, total_lines_removed: 1e20 } })])[0].out);
+  check('a line count past the safe integers is not printed', !/1000000|e\+/.test(big), JSON.stringify(big.slice(0, 120)));
+
+  // Wrapping was never exercised: with M29 (visibleWidth always 0) nothing failed.
+  const fullFixture = JSON.parse(fs.readFileSync(path.join(FIXTURES, 'full.json'), 'utf8'));
+  const withFuture = { ...fullFixture, rate_limits: { five_hour: { used_percentage: 61, resets_at: nowS + 3 * 3600 },
+    seven_day: { used_percentage: 22, resets_at: nowS + 3 * 86400 } } };
+  const lineCount = (cols) => {
+    const o = renderSequence([withFuture], { env: { COLUMNS: String(cols) } })[0];
+    return { lines: plain(o.out).replace(/\n$/, '').split('\n').length, widths: plain(o.out).replace(/\n$/, '').split('\n').map((l) => visibleWidth(l)) };
+  };
+  const wide = lineCount(300);
+  const narrow = lineCount(60);
+  check('a wide terminal keeps one line', wide.lines === 1, JSON.stringify(wide));
+  check('a narrow terminal wraps to two lines', narrow.lines === 2, JSON.stringify(narrow));
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -955,6 +1343,8 @@ function main() {
   runPaceColorTests();
   runPaceHardeningTests();
   runSubagentContractTests();
+  runInjectionTests();
+  runInjectionFollowupTests();
 
   // NO_COLOR must strip every escape sequence.
   const home = makeTempHome();

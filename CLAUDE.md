@@ -30,7 +30,9 @@ lines of ANSI-colored text to stdout. Installed via `npx ampline-claude --instal
   subagent labels, model names, and config values (`.amplinerc.json` `separator`, notably —
   it loads automatically from a repo you didn't write) all pass through
   `colors.js`'s `sanitize()` before interpolation. Terminal escape sequences are otherwise a
-  live injection vector, not a hypothetical one — see `DECISIONS.md`.
+  live injection vector, not a hypothetical one — see `DECISIONS.md`. Sanitizing is not enough
+  on its own: a value must also be the right TYPE and in a sane range, because `sanitize(String({}))`
+  is still `[object Object]` and a bare finite number can print as `1e+21` (D38, D42).
 - **`execFileSync` blocks the event loop.** No `setTimeout` can bound it. The only real
   defenses are: as few subprocess calls as possible (one `git status` call per render cycle,
   not two), a hard timeout on that one call, and caching so most renders hit zero

@@ -928,3 +928,80 @@ the omission rules, hostile labels and `NO_COLOR`. **Not verified live:** that C
 renders these rows in the agent panel. This is to be amended after that check. Also unknown is
 which Claude Code version introduced the JSON contract, so a user on a much older version may
 see a difference.
+
+### D42. Values from outside are type- and range-checked, not only sanitized
+
+D38 found that `pr.number` went through a bare `Number()` and printed `#1e+21`, and that
+`review_state` used as an object key printed function source. The escape-injection tests had
+only ever covered the separator and the PR URL and kind, so the same shapes were never looked
+for anywhere else. A suite that exercises every field that reaches stdout found them:
+
+- **dir:** `workspace.repo.name` went through `sanitize(String(...))`. An object printed
+  `[object Object]`, an array its first element, a number its digits and `true` printed `true`.
+- **model:** `display_name || id` the same way.
+- **cost:** any finite number was accepted, so a payload could print `$-5.00`, `$1e+21`,
+  `+-3/--4` or `+1.5/-2.25`.
+- **dir and git:** a non-string `current_dir` is truthy, so it won the `||` and either threw
+  inside `path.basename` (the dir segment was dropped) or dropped the git segment even when
+  `cwd` was a valid repo.
+
+**Decision.** A text field must be a non-empty string, or it counts as absent and the next
+source is used. `current_dir` and `cwd` are chosen as the first non-empty string, in both the
+dir and git segments. Cost must be a finite number in 0 up to (not including) 1e9, and line
+counts non-negative safe integers; anything else is left out rather than printed. Nothing is
+coerced: `String(v)` of the wrong type is exactly what printed the junk.
+
+**What held.** String sanitization was already correct everywhere it is applied. No control
+sequence reached stdout in any case, including a hand-written `.git/HEAD` and todo text. The
+suite asserts one whole-line invariant: once our own color codes are removed, no ESC, BEL, C1
+control, U+2028, U+2029 or NUL remains, with colors on and under `NO_COLOR`.
+
+**Rejected:** clamping cost to the cap (it would display a wrong number as if it were right),
+and coercing with `String()` or `Number()` (that is the bug).
+
+**A testing lesson, kept here because it nearly shipped.** The first hostile-branch test passed
+without exercising `sanitize()` at all. The branch is read with `/^ref:\s*refs\/heads\/(.+)$/`,
+and `.` does not match U+2028, so a hostile name containing it was never read. A mutation that
+removed the `sanitize()` call survived, which is how it was caught. The test now leaves the
+separator out, as a real attacker would, and asserts the branch is actually rendered as inert
+text before it asserts that nothing leaked.
+
+**Found by an independent review of this suite, and fixed here.** The same pass reproduced
+these against the real binary:
+
+- **Rate limits were coerced with `Number()`.** `used_percentage` of `null`, `""`, `false` or
+  `[]` became a fabricated 0%, and `"0x1F"` or `"1e1"` became a percentage nobody sent. The
+  value was also written through to the cache, so a later render with no `rate_limits` at all
+  served that 0% for up to a day. It must now be a number, as the context segment already
+  required.
+- **A non-string todo printed on the second render.** The type guard sat only on the cache-miss
+  path, so the first render cached the object and every later render within the fresh window
+  printed `[object Object]` or its digits.
+- **Session ids matched by bare prefix and doubled as cache keys.** A one-character id surfaced
+  another session's task, and `x_1`, `x:1` and `x/1` all slugged to the same cache key. An id
+  must now match `[A-Za-z0-9_-]{1,128}`, and a todo file belongs to a session only when it is
+  `<id>.json` or `<id>-agent-<...>.json`. Real ids are UUIDs, so this costs nothing. The
+  `-agent-` shape is Claude Code's convention as remembered, **not re-verified here**: there is
+  no `~/.claude/todos` directory on the machine this was developed on.
+- **An unanchored regex starting with `\s*` was quadratic.** `shortenModel` took 8 seconds for a
+  display name of 100,000 spaces and never returned for a million, which breaks the "never a
+  hang" contract with a single synchronous line. The input is now cut to 200 characters before
+  any regex runs, the pattern no longer starts with `\s*`, and whitespace is collapsed and
+  trimmed afterwards.
+- **Names that are empty after cleaning printed an empty colored segment** and a doubled
+  separator. `"\x07"` and `"Claude "` are non-blank strings that clean to nothing, so emptiness
+  is now judged after cleaning: a model falls back to its id, a repo name to the directory name,
+  and a blank todo is omitted.
+- **The subagent path had no type checks.** An object label, a numeric description, or a
+  `tokenCount` of `true` or `"5000"` printed `[object Object]`, `12345`, `1` and `5k`. Names must
+  be strings, and a token count must already be a number.
+- **The directory name had no length cap**, so a 10 MB repo name printed 10 MB. It is now cut
+  at 40 characters, as the model (32), branch (24) and task (40) already were.
+
+**What is verified and what is not (2026-10-14).** The cases above are covered by tests, and a
+mutation matrix over each type check, each `sanitize()` call, each cap and each fallback fails
+the suite. Two pairs are defense in depth on purpose (the model regex fix and the 200 character
+bound), so they are mutated together. **Not covered, and handled separately:** bidirectional
+override and zero-width characters, which `sanitize()` does not strip, and the width of
+characters outside the old wide-character ranges. The suite is also green with `NO_COLOR`
+exported in the developer's shell.
