@@ -70,7 +70,7 @@ flowchart LR
 
     subgraph controls["Controls before stdout"]
         direction TB
-        san["<b>sanitize()</b><br/>strips C0 and C1 controls,<br/>U+2028 and U+2029"]
+        san["<b>sanitize()</b><br/>strips C0 and C1 controls,<br/>line separators, bidi overrides,<br/>zero-width and tag characters"]
         link["<b>safeLinkUrl()</b><br/>https only, printable ASCII,<br/>2048 chars max, no credentials"]
         own["Own-property lookup<br/>review_state, exact match on pr.kind"]
         gitcall["<b>Hardened git call</b><br/>-c core.fsmonitor= · --no-optional-locks<br/>400ms timeout · no shell"]
@@ -100,7 +100,7 @@ flowchart LR
 
 | Control | Where | Stops |
 | --- | --- | --- |
-| `sanitize()` | applied to branch name, repo name, directory name, todo text, subagent label and description, model name (including the subagent row's model id), and the config `separator` | Terminal escape sequences smuggled in through text the user did not write. A committed `.amplinerc.json` loads automatically, so an unsanitized `separator` was a live OSC 8 injection (D19) |
+| `sanitize()` | applied to branch name, repo name, directory name, todo text, subagent label and description, model name (including the subagent row's model id), and the config `separator` | Terminal escape sequences, bidirectional overrides that reorder the rest of the line, and zero-width or tag characters that blank or hide text (D43), all smuggled in through text the user did not write. A committed `.amplinerc.json` loads automatically, so an unsanitized `separator` was a live OSC 8 injection (D19) |
 | `safeLinkUrl()` in `lib/segments/pr.js` | `pr.url` before it goes inside an OSC 8 hyperlink | A BEL or ESC in a URL ending the link early and injecting more. Only a plain `https` URL with no credentials becomes a link, and the parsed `href` is emitted, not the raw string (D38) |
 | `Object.hasOwn` lookup, exact `pr.kind` match | `review_state` color table, subagent `status` color table, `!N` versus `#N` label | `review_state: "constructor"` or `status: "constructor"` printing function source. The `kind` string itself is never interpolated (D38, D41) |
 | Type and range checks | `repo.name` and `display_name` must be strings, a non-string `current_dir` falls back to `cwd`, cost must be in 0 to 1e9 and line counts non-negative integers | A sanitized `String({})` is still `[object Object]`, and a bare finite number printed as `1e+21`, `$-5.00` or `+-3` (D42) |
