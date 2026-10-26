@@ -406,16 +406,24 @@ fixes, and what is deliberately not done:
   CR/LF, ampline accepts one trailing newline and treats any other oddity (leading or trailing
   whitespace, a carriage return, an embedded newline, an empty value) as untrusted and skips the
   call.
-- `commondir` is resolved the way git does it: `"<gitdir>/<value>"` handed to the real-path call
-  as one string (symlinks followed before `..`), not collapsed textually. A failed lookup is
-  untrusted.
+- `commondir` and the `.git` file's target are resolved the way git does it: `"<dir>/<value>"`
+  handed to the real-path call as one string (symlinks followed before `..`), not collapsed
+  textually; the git dir is validated and read there. A failed lookup is untrusted. The textual
+  path stays only as the cache key.
 - git is started with its working directory set to the directory that holds the `.git` entry
   ampline scanned (git checks `<dir>/.git` first), so its own discovery begins at that entry and
-  it keeps its own ownership (`safe.directory`) check. `--git-dir` and `--work-tree` were tried
-  and rejected: they skip discovery and with it the ownership check (with
-  `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`, unpinned git refuses and pinned git runs). Do not re-add
-  them. `-c safe.bareRepository=explicit` is added, and `GIT_NO_LAZY_FETCH=1` goes in the child's
-  environment.
+  it keeps its own ownership (`safe.directory`) check. It starts there, but git does not
+  necessarily END there: a `.git` directory that fails git's `is_git_directory` check (HEAD,
+  `objects/`, `refs/`) is skipped by git, which then walks up to a parent repository ampline never
+  scanned. So ampline mirrors that check (failing it skips the call) and also sets
+  `GIT_CEILING_DIRECTORIES` to the work tree's parent, which keeps git inside the scanned work
+  tree (it fails instead of walking up) without giving up discovery or the ownership check.
+  `--git-dir` and `--work-tree` were tried and rejected: they skip discovery and with it the
+  ownership check (with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`, unpinned git refuses and pinned git
+  runs). Do not re-add them. `-c safe.bareRepository=explicit` is added; `GIT_NO_LAZY_FETCH=1`
+  goes in the child's environment; and the inherited variables that name a repository
+  (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`) are removed from it.
 - A bare-looking directory between the cwd and the repository still skips the call, as defense in
   depth (cheap, and its only false positive is a cwd that really is a git dir).
 

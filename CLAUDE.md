@@ -83,8 +83,11 @@ lib/
                                (a real defense: no index write, so no post-index-change hook),
                                `--ignore-submodules=dirty` (a dirty submodule work tree does not
                                set the marker), `safe.bareRepository=explicit`; run with cwd = the
-                               directory holding the scanned `.git` entry, NEVER `--git-dir` /
-                               `--work-tree`, which would skip git's ownership check). If the
+                               work tree holding the scanned `.git` entry and
+                               `GIT_CEILING_DIRECTORIES` = its parent so git cannot walk above it,
+                               NEVER `--git-dir` / `--work-tree`, which would skip git's ownership
+                               check; the `.git` dir must also pass a mirror of git's
+                               `is_git_directory`). If the
                                repo's OWN config (config, config.worktree, and a linked
                                worktree's common dir via `commondir`, resolved by real path the
                                way git does) defines a `[filter ...]`, `[include]` or
