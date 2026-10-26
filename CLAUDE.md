@@ -72,7 +72,13 @@ lib/
   install.js               settings.json merge + backup + runtime copy to ~/.claude/hooks/.
                             Writes through a symlinked settings.json rather than replacing it,
                             and preserves the original file's permission bits across the atomic
-                            rename.
+                            rename (the temp file is created with that mode). Backs up before every
+                            write and aborts if it cannot; prunes only the exact
+                            settings.json.backup.<stamp> names to the newest 5. `pointsAtUs` matches
+                            only `node "<dir>/hooks/ampline-claude/bin/ampline-claude.js"` (+ --subagent).
+                            `chooseNodePath` is the pure node-path chooser (D44). Reads settings.json
+                            again just before writing. Uninstall also clears the runtime and cache when
+                            settings no longer list ampline. Tests: test/installer.js (throwaway homes).
   segments/
     model.js                Model name + effort, wheel color.
     context.js               Context-window usage bar.
@@ -149,7 +155,7 @@ lib/config.js    loadConfig(cwd) -> config · DEFAULT_CONFIG · VALID_SEGMENTS
 
 lib/render.js    renderStatusline(input) -> string                  <- SYNCHRONOUS
 
-lib/install.js   runInstaller(options) -> void · INSTALL_DIR
+lib/install.js   runInstaller(options) -> void · chooseNodePath({execPath,pathEntries,platform,realpath,isFile}) -> {path,source}|null · pointsAtUs(entry) · isBackupName(name) · INSTALL_DIR
 
 segments         render<Name>Segment(ctx) -> string | null
                  segments/pr.js also exports safeLinkUrl(raw) -> href | null
@@ -221,6 +227,10 @@ the tarball.
 
 `npm test` runs `test/run.js` — spawns the real binary against every fixture in
 `test/fixtures/`, each in its own throwaway `HOME`/`USERPROFILE` (see `DECISIONS.md` D14 for
-why per-fixture isolation, not per-suite, is required). `scripts/syntax-check.js` and
+why per-fixture isolation, not per-suite, is required). Every spawn drops `CLAUDE_CONFIG_DIR`,
+`NO_COLOR` and `FORCE_COLOR` (`cleanEnv()`) and uses its throwaway home as the working directory,
+so nothing on the developer's machine can change a result. The installer tests live in
+`test/installer.js` (called from `run.js`) and must only run inside `mkdtemp` homes.
+`scripts/syntax-check.js` and
 `scripts/verify-pack.js` are CI-only, excluded from the published tarball by the `files`
 allowlist in `package.json`.

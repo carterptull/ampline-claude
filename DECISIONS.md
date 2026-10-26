@@ -552,6 +552,9 @@ since nvm doesn't delete prior versions on a version switch — it only breaks i
 version is later uninstalled, which is rarer than the PATH gap it fixes. Unverified on real
 macOS/Linux hardware; flagged for confirmation alongside D18.
 
+**Amended by D44:** Homebrew and the other version managers break that trade-off, so a stable
+PATH entry for the same binary is now preferred when one exists.
+
 ### D28. `install.js` preserves `settings.json`'s file mode and symlink identity
 
 Two related gaps in `writeSettings`. First: the atomic write (tmp file + rename) created the
@@ -1126,3 +1129,59 @@ each rendered field and a hostile `.git/HEAD` and todo are covered by tests, and
 matrix that un-strips each range, over-strips the joiners, and removes each width range fails
 the suite. **Not verified:** the visual reordering on a real bidi terminal, and the width of
 code points outside the ranges listed, since the table is deliberately minimal.
+
+### D44. The installer refuses to rewrite without a backup, matches only its own commands, and prefers a durable node path
+
+An audit of `lib/install.js`, the one module that can destroy a user's configuration, found
+four ways it could do the wrong thing quietly, and that nothing tested it.
+
+- **Backups.** `pruneBackups` removed every file that started with `settings.json.backup.`
+  beyond the newest five, including copies the user made by hand, and `backup()` returned
+  `null` on any failure, after which install and uninstall rewrote `settings.json` anyway. Now
+  only the exact stamp ampline writes is pruned (sorted by name, which is chronological), and a
+  failed backup of an existing file stops the run with exit 1 and a message, before anything is
+  written. Uninstall does the same, and removes nothing.
+- **Which commands are ours.** `pointsAtUs` accepted any command that contained
+  `ampline-claude`, so a user's `~/bin/ampline-claude-wrap.sh` was deleted by uninstall and
+  replaced by install without a notice. It now accepts only `node` (bare, or an absolute path to
+  a file named `node` or `node.exe`) followed by the quoted installed entry,
+  `<dir>/hooks/ampline-claude/bin/ampline-claude.js`, with or without `--subagent`; the
+  README's manual-install shape matches. Anything else is foreign, and foreign keeps its existing
+  behavior: install announces it (now for `subagentStatusLine` as well as `statusLine`) and
+  replaces it after a backup, uninstall leaves it, and the runtime copy, since a wrapper may call
+  it.
+- **Node path (K2, amends D27).** D27 wrote `process.execPath`. Node resolves that through
+  realpath, so Homebrew gives `/opt/homebrew/Cellar/node/<version>/bin/node`, and `brew
+  upgrade` plus its cleanup deletes it: the statusline goes blank with no message, the failure
+  D27 set out to prevent. `chooseNodePath` (pure, with `execPath`, the PATH entries, `realpath`
+  and the file check injected) now does this: if `execPath` is in a versioned directory (Homebrew
+  `Cellar`; nvm, fnm, volta, asdf, nodenv, mise) it looks through PATH for a `node` whose
+  realpath is the same file and whose own path is not in such a directory, and writes that one;
+  otherwise it keeps `execPath`. A PATH entry inside a version directory is skipped, because it
+  is no more durable, and fnm's per-shell `fnm_multishells` symlinks are skipped because they
+  disappear at reboot. The chosen path and "re-run `npx ampline-claude --install` after
+  upgrading Node" are printed on every install.
+- **Smaller.** The settings temp file is created with the target's mode (it could be world
+  readable for an instant, and an old file at that name is removed rather than written through).
+  `ampline-claude.new-<pid>` and `.old-<pid>` directories older than a minute are removed on
+  install. `settings.json` is read again right before the final write and the entries are merged
+  into that copy, which shrinks, but does not remove, the window in which Claude Code's own
+  write could be lost. Uninstall when `settings.json` has no ampline entries still deletes the
+  runtime copy and cache and says so, unless a different statusline is configured.
+
+**Tests.** `test/installer.js` runs the real binary in `mkdtemp` homes, with `CLAUDE_CONFIG_DIR`
+removed and the working directory inside the home, and covers install, re-install, a foreign
+entry, a wrapper script, an unparseable file, a symlinked file, file mode, pruning, uninstall in
+each state, stale staging, and `--help`/`--version`. Two tests call `lib/install.js` in process
+with `CLAUDE_CONFIG_DIR` pointed at a temporary directory and a stubbed `copyFileSync`, to reach
+the failed-backup path on any OS. The spawned-render helpers in `test/run.js` now also drop
+`CLAUDE_CONFIG_DIR` and use the throwaway home as the working directory.
+
+**Rejected:**
+- *Always writing a bare `node`.* Brings back the blank statusline under a GUI launch that D27 fixed.
+- *Following version-manager shims (volta's, asdf's) to the "stable" path.* A shim is a different
+  file from the real binary, so "same binary" cannot be shown; the versioned path is kept.
+- *Warning on a failed backup and continuing.* The README promises a backup first.
+
+**Not verified:** Homebrew, nvm-windows and the other version managers were exercised only through
+injected paths. No Mac was available, as for D27.

@@ -33,6 +33,13 @@ npx ampline-claude --install
 That's it. It installs itself into `~/.claude/settings.json` and copies its runtime to
 `~/.claude/hooks/ampline-claude/`. Restart Claude Code or start a new session to see it.
 
+The installer writes the absolute path of the Node that ran it, so the statusline still works when
+Claude Code is launched without your shell's `PATH`. It prints that path. If it sits in a
+directory that holds a single Node version (Homebrew's `Cellar`, or the version folders of nvm,
+fnm, volta, asdf, nodenv or mise) and a stable `PATH` entry such as `/opt/homebrew/bin/node` leads
+to the same binary, the stable entry is written instead. Either way, re-run
+`npx ampline-claude --install` after you upgrade Node.
+
 The bare `npx ampline-claude` also installs, but only from an interactive terminal. Use
 `--install` in scripts, in CI, or any time you are not sure. It works everywhere.
 
@@ -79,11 +86,15 @@ Re-runs the installer, which replaces the installed copy in place.
 npx ampline-claude uninstall
 ```
 
-Removes the `statusLine`/`subagentStatusLine` entries from `settings.json` (backing up the
-file first), deletes `~/.claude/hooks/ampline-claude/`, and clears the cache. If your
-`settings.json` points at a different statusline, uninstall refuses to touch it. Installing
-works a bit differently though: installing over an existing foreign `statusLine` prints a
-notice and then replaces it.
+Removes the `statusLine`/`subagentStatusLine` entries ampline wrote from `settings.json` (backing
+up the file first; if the backup cannot be made, nothing is changed), deletes
+`~/.claude/hooks/ampline-claude/`, and clears the cache. If the entries are already gone, it still
+deletes the runtime copy and the cache. Only a command that runs the installed copy counts as
+ampline's: if your `settings.json` points at a different statusline, including your own wrapper
+script, uninstall leaves the file and the runtime copy alone. Installing works a bit differently
+though: installing over an existing foreign `statusLine` or `subagentStatusLine` prints a notice
+and then replaces it, after backing the file up. Backups are named
+`settings.json.backup.<timestamp>`, and only the newest five of those are kept.
 
 Other flags: `npx ampline-claude --version` prints the installed version, `--help` prints
 usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare commands above.

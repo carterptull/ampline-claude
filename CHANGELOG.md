@@ -63,6 +63,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other newer emoji as two cells and combining or zero-width characters as none, so the line
   wraps when it should. A test now fails if such a character appears in the source. See
   `DECISIONS.md` D43.
+- **The installer is safer, and now has tests.** A backup that cannot be written now stops the install or
+  uninstall with exit 1, instead of rewriting `settings.json` with no way back. Only the files
+  ampline itself wrote (`settings.json.backup.<timestamp>`) are pruned, so your own
+  `settings.json.backup.*` copies are left alone. Only the commands the installer writes count as
+  ampline's, so a wrapper such as `ampline-claude-wrap.sh` is announced before an install replaces
+  it and is never deleted by uninstall. A foreign `subagentStatusLine` is announced too. The
+  settings temp file is created with the original file's permissions, `settings.json` is read
+  again just before it is written so a change Claude Code made in between is kept, and staging
+  directories left by a crashed install are cleaned up. Uninstall now also removes the runtime copy
+  and cache when `settings.json` no longer lists ampline. A new suite runs the installer,
+  uninstaller and `--help`/`--version` inside throwaway homes. See `DECISIONS.md` D44.
+- **The installed command survives a Homebrew upgrade.** Homebrew resolves Node to a versioned
+  `Cellar` path that is removed on upgrade, which left a blank statusline. When a stable `PATH` entry
+  (for example `/opt/homebrew/bin/node`) leads to the same binary, the installer writes that one. The
+  install output now names the Node path it wrote and says to re-run `--install` after upgrading Node.
+- **The test suite no longer depends on the developer's machine.** Spawned renders now run with
+  `CLAUDE_CONFIG_DIR` removed and with the throwaway home as the working directory, so a real
+  `~/.claude` or a local `.amplinerc.json` cannot change a result.
 
 ### Security
 - **`git status` is no longer run in a repository whose own config defines a filter or an include.**
