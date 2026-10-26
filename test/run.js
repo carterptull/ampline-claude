@@ -4,6 +4,9 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+// In-process requires must not see a developer's redirected config dir either.
+delete process.env.CLAUDE_CONFIG_DIR;
+
 const ROOT = path.join(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'ampline-claude.js');
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -16,6 +19,30 @@ function makeTempHome() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-home-'));
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
   return dir;
+}
+
+// A copy of the developer's environment with everything that steers ampline removed. A
+// CLAUDE_CONFIG_DIR left in place would send every spawned render's cache and todo reads to the
+// developer's real config directory, and NO_COLOR / FORCE_COLOR would make color assertions pass
+// vacuously. Tests that want one of them pass it through the spawn's `env` overlay.
+function cleanEnv() {
+  const base = { ...process.env };
+  delete base.NO_COLOR;
+  delete base.FORCE_COLOR;
+  delete base.CLAUDE_CONFIG_DIR;
+  return base;
+}
+
+// Options for the short `node -e` helper children that load one lib module by absolute path:
+// a clean environment and a throwaway home as HOME and cwd, so nothing they load can reach the
+// developer's real home. One shared directory, removed when the run ends.
+let scratchHome = null;
+function childOptions(extraEnv) {
+  if (!scratchHome) scratchHome = makeTempHome();
+  return {
+    encoding: 'utf8', timeout: 10000, cwd: scratchHome,
+    env: { ...cleanEnv(), HOME: scratchHome, USERPROFILE: scratchHome, ...(extraEnv || {}) },
+  };
 }
 
 // Config-file loading and the todos-backed task segment read from the
@@ -91,13 +118,14 @@ function spawnRender(input, { args = [BIN], seed, env = {} } = {}) {
   // A developer's exported NO_COLOR / FORCE_COLOR must not leak into the child:
   // with color off, no escape is ever emitted, so every "no link" and "no stray
   // escape" assertion would pass vacuously. Tests that want it pass it via `env`.
-  const base = { ...process.env };
-  delete base.NO_COLOR;
-  delete base.FORCE_COLOR;
+  // CLAUDE_CONFIG_DIR is scrubbed too (see cleanEnv), and cwd is the throwaway home, never the
+  // repo: a walk-up from the repo root would pass through the developer's own .amplinerc.json.
+  const base = cleanEnv();
   const res = spawnSync(process.execPath, args, {
     input,
     encoding: 'utf8',
     timeout: 10000,
+    cwd: home,
     env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '120', ...env },
   });
   try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
@@ -407,10 +435,7 @@ function runBarMarkerTests() {
   // colors on, the 8 cells are one contiguous run ending in the single closing reset.
   const colorChild = spawnSync(process.execPath, ['-e',
     "const {renderBar}=require(process.argv[1]);process.stdout.write(JSON.stringify([renderBar('H',60,{marker:0.5}),renderBar('H',97,{marker:0.5})]))",
-    path.join(ROOT, 'lib', 'bar.js')], {
-    encoding: 'utf8', timeout: 10000,
-    env: (() => { const e = { ...process.env }; delete e.NO_COLOR; return e; })(),
-  });
+    path.join(ROOT, 'lib', 'bar.js')], childOptions());
   let colored = [];
   try { colored = JSON.parse(colorChild.stdout || '[]'); } catch {}
   check('colors-on output has escapes (the styling test is not vacuous)',
@@ -453,9 +478,7 @@ function runBarMarkerTests() {
   // NO_COLOR proof: a real child process with colors off must still show the marker, with no escapes.
   const child = spawnSync(process.execPath, ['-e',
     "const {renderBar}=require(process.argv[1]);process.stdout.write(renderBar('H',97,{marker:0.5}))",
-    path.join(ROOT, 'lib', 'bar.js')], {
-    encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' }, timeout: 10000,
-  });
+    path.join(ROOT, 'lib', 'bar.js')], childOptions({ NO_COLOR: '1' }));
   const out = child.stdout || '';
   check('marker still shows with NO_COLOR and emits no escapes', out.includes(MARK) && !/\x1b/.test(out), JSON.stringify(out));
 }
@@ -563,11 +586,9 @@ function runPaceColorTests() {
 
   // renderBar: rampPct changes only the color the ramp is read at.
   const child = (expr) => {
-    const env = { ...process.env };
-    delete env.NO_COLOR;
     const r = spawnSync(process.execPath, ['-e',
       `const B=require(process.argv[1]+'/lib/bar.js');process.stdout.write(JSON.stringify(${expr}))`, ROOT],
-    { encoding: 'utf8', env, timeout: 10000 });
+    childOptions());
     try { return JSON.parse(r.stdout); } catch { return null; }
   };
   const GREEN = sgr([96, 200, 120]);
@@ -637,13 +658,11 @@ function runPaceColorTests() {
   // A segment handed config that never went through validateAndMerge must still
   // only act on a literal `true`.
   const segChild = (config) => {
-    const env = { ...process.env };
-    delete env.NO_COLOR;
     const reset = Date.now() + 4 * 60 * 60 * 1000;
     const r = spawnSync(process.execPath, ['-e',
       `const S=require(process.argv[1]+'/lib/segments/rateLimits.js');
        process.stdout.write(JSON.stringify(S.renderFiveHourSegment({usage:{fiveHour:{percentage:40,resetsAtMs:${reset}},weekly:null,stale:false},config:${JSON.stringify(config)}})))`, ROOT],
-    { encoding: 'utf8', env, timeout: 10000 });
+    childOptions());
     try { return JSON.parse(r.stdout); } catch { return null; }
   };
   check('segment given paceColors: true uses pace', String(segChild({ paceColors: true })).startsWith(ORANGE), JSON.stringify(segChild({ paceColors: true })));
@@ -809,13 +828,11 @@ function runSubagentContractTests() {
   // Expected rows come from a child with colors on, so a developer's exported NO_COLOR
   // cannot make an in-process module disagree with the (NO_COLOR-scrubbed) child output.
   const expectedRows = (() => {
-    const env = { ...process.env };
-    delete env.NO_COLOR;
     const r = spawnSync(process.execPath, ['-e',
       "const {renderTaskRow}=require(process.argv[1]+'/lib/segments/subagents.js');" +
       "const f=JSON.parse(require('fs').readFileSync(process.argv[2],'utf8'));" +
       'process.stdout.write(JSON.stringify(f.tasks.map((t)=>renderTaskRow(t,f.columns))))',
-      ROOT, path.join(FIXTURES, 'subagent-tasks.json')], { encoding: 'utf8', env, timeout: 10000 });
+      ROOT, path.join(FIXTURES, 'subagent-tasks.json')], childOptions());
     try { return JSON.parse(r.stdout); } catch { return null; }
   })();
   check('each content is the row text renderTaskRow produces',
@@ -1134,14 +1151,12 @@ function runInjectionTests() {
 function renderSequence(payloads, { seed, env, cwd } = {}) {
   const home = makeTempHome();
   if (seed) seed(home);
-  const base = { ...process.env };
-  delete base.NO_COLOR;
-  delete base.FORCE_COLOR;
+  const base = cleanEnv();
   const results = [];
   try {
     for (const p of payloads) {
       const r = spawnSync(process.execPath, [BIN], {
-        input: JSON.stringify(p), encoding: 'utf8', timeout: 20000, cwd,
+        input: JSON.stringify(p), encoding: 'utf8', timeout: 20000, cwd: cwd || home,
         env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200', ...(env || {}) },
       });
       results.push({ status: r.status, out: r.stdout || '' });
@@ -1556,9 +1571,7 @@ function runConfigHardeningTests() {
       fs.writeFileSync(path.join(proj, '.amplinerc.json'), typeof config === 'string' ? config : JSON.stringify(config), 'utf8');
     }
     if (seed) seed(home, proj);
-    const base = { ...process.env };
-    delete base.NO_COLOR;
-    delete base.FORCE_COLOR;
+    const base = cleanEnv();
     const t0 = Date.now();
     const res = spawnSync(process.execPath, [BIN], {
       input: input ? input(home) : JSON.stringify(inlinePayload({ cwd: path.join(home, 'proj') })),
@@ -1646,9 +1659,7 @@ function runConfigHardeningTests() {
     const proj = path.join(home, 'proj');
     fs.mkdirSync(proj, { recursive: true });
     setup(proj);
-    const base = { ...process.env };
-    delete base.NO_COLOR;
-    delete base.FORCE_COLOR;
+    const base = cleanEnv();
     const res = spawnSync(process.execPath, [BIN], {
       input: JSON.stringify(inlinePayload({ cwd: proj })), encoding: 'utf8', timeout: 20000, cwd: home,
       env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200' },
@@ -2153,13 +2164,15 @@ function main() {
     input: fs.readFileSync(path.join(FIXTURES, 'full.json'), 'utf8'),
     encoding: 'utf8',
     timeout: 10000,
-    env: { ...process.env, HOME: home, USERPROFILE: home, COLUMNS: '120', NO_COLOR: '1' },
+    cwd: home,
+    env: { ...cleanEnv(), HOME: home, USERPROFILE: home, COLUMNS: '120', NO_COLOR: '1' },
   });
   try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
   if (res.status !== 0) fail('NO_COLOR', `exit code ${res.status}`);
   else if (/\x1b\[/.test(res.stdout)) fail('NO_COLOR', 'output still contains ANSI escapes');
   else console.log('  ok    NO_COLOR');
 
+  if (scratchHome) { try { fs.rmSync(scratchHome, { recursive: true, force: true }); } catch {} }
   console.log(failures ? `\n${failures} failure(s)` : '\nAll green.');
   process.exit(failures ? 1 : 0);
 }
