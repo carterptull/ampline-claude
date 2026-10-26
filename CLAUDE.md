@@ -48,6 +48,8 @@ bin/ampline-claude.js     Entry point. Six argv-driven paths: --help, --version,
                            default statusline path (TTY -> installer, piped stdin -> render).
                            `if (require.main === module) main();` guards against a bare
                            `require('ampline-claude')` triggering a real install as a side effect.
+                           `package.json` declares `exports: { "./package.json": ... }` and no `main`:
+                           `lib/` is internal and unimportable by package path (D45). `bin` is unaffected.
 lib/
   claudeDir.js              Resolves CLAUDE_CONFIG_DIR (falls back to ~/.claude). Every other
                             module that touches the config directory goes through this — never

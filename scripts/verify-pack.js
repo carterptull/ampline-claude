@@ -48,6 +48,17 @@ check('LICENSE present', files.some((f) => f.toLowerCase() === 'license'));
 check('.amplinerc.json.example present', files.some((f) => f.toLowerCase() === '.amplinerc.json.example'));
 check('package.json present', files.some((f) => f.toLowerCase() === 'package.json'));
 
+// D45: `lib/` is internal, which only an `exports` field enforces. Only ./package.json is
+// exported, and there is no `main`, so `require('ampline-claude/lib/...')` throws.
+const pkgJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+check(
+  'package.json has an exports field that exposes only ./package.json',
+  !!pkgJson.exports && typeof pkgJson.exports === 'object' &&
+    Object.keys(pkgJson.exports).join() === './package.json' && pkgJson.exports['./package.json'] === './package.json',
+  JSON.stringify(pkgJson.exports)
+);
+check('package.json has no main field (D29)', !('main' in pkgJson));
+
 // Regression guard: a Windows checkout once published a tarball whose bin/
 // shebang carried a stray \r, invisible to a file-list-only check like this
 // one used to be. What's on disk here is exactly what ships.

@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `renderBar`. These are additions to declared interfaces; `resolveUsage` is unchanged.
 
 ### Changed
+- **`lib/` is now internal: the package declares `exports`.** `package.json` exports only
+  `./package.json`, so `require('ampline-claude/lib/...')` throws `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+  The `ampline-claude` command, `npx ampline-claude` and `require('ampline-claude/package.json')`
+  are unaffected. If you imported a module from `lib/`, it was never a supported interface and
+  may change in any release. See `DECISIONS.md` D45.
 - **Known limitations updated for macOS.** v0.7.0 rendering, including the pace marker glyph,
   is confirmed working on a real Mac, and the marker was also confirmed in a live Claude Code
   session on Windows. See `DECISIONS.md` D39.

@@ -1464,6 +1464,70 @@ function runInvisibleCharacterTests() {
 // ---- Source files must not hide text from a reader ("Trojan Source") -----------------
 // A bidirectional override or a zero-width character inside a source file or document makes
 // the code a reviewer sees differ from the code that runs. None belong in this repository.
+// D45: `exports` makes `lib/` internal. Proven from outside the repo: the files npm would ship
+// (the `files` allowlist) are copied into `<tmp>/node_modules/ampline-claude`, then a consumer in
+// <tmp> resolves it the way a real install would. `package.json` stays reachable, every `lib/`
+// path is refused, and the CLI still runs (a bin path is a file path, so `exports` does not
+// apply to it).
+function runExportsTests() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const only = pkg.exports && typeof pkg.exports === 'object' ? Object.keys(pkg.exports) : [];
+  if (only.length !== 1 || only[0] !== './package.json' || pkg.exports['./package.json'] !== './package.json') {
+    fail('exports: package.json exports only ./package.json', JSON.stringify(pkg.exports));
+    return;
+  }
+  if ('main' in pkg) { fail('exports: no main field (D29)', 'main is set'); return; }
+  console.log('  ok    exports: only ./package.json is exported, and there is no main');
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-exports-'));
+  try {
+    const installed = path.join(tmp, 'node_modules', 'ampline-claude');
+    fs.mkdirSync(installed, { recursive: true });
+    fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(installed, 'package.json'));
+    for (const entry of pkg.files) {
+      const from = path.join(ROOT, entry);
+      if (fs.existsSync(from)) fs.cpSync(from, path.join(installed, entry), { recursive: true });
+    }
+
+    const script = [
+      "const out = {};",
+      "out.version = require('ampline-claude/package.json').version;",
+      "for (const id of ['ampline-claude', 'ampline-claude/lib/colors', 'ampline-claude/lib/render.js', 'ampline-claude/lib/segments/git', 'ampline-claude/bin/ampline-claude.js']) {",
+      "  try { require.resolve(id); out[id] = 'resolved'; } catch (e) { out[id] = e.code; }",
+      "}",
+      "process.stdout.write(JSON.stringify(out));",
+    ].join('\n');
+    const res = spawnSync(process.execPath, ['-e', script], { ...childOptions(), cwd: tmp, encoding: 'utf8', timeout: 10000 });
+    let out = null;
+    try { out = JSON.parse(res.stdout); } catch {}
+    if (!out) { fail('exports: consumer resolution ran', `exit ${res.status} ${res.stderr}`); return; }
+    if (out.version !== pkg.version) fail('exports: require("ampline-claude/package.json") still works', JSON.stringify(out));
+    else console.log('  ok    exports: require("ampline-claude/package.json") still works');
+    const refused = ['ampline-claude/lib/colors', 'ampline-claude/lib/render.js', 'ampline-claude/lib/segments/git', 'ampline-claude/bin/ampline-claude.js'];
+    const notRefused = refused.filter((id) => out[id] !== 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+    if (notRefused.length) fail('exports: lib/ and bin/ are refused as package paths', JSON.stringify(out));
+    else console.log('  ok    exports: lib/ and bin/ paths throw ERR_PACKAGE_PATH_NOT_EXPORTED');
+    // No `main` and no `.` export: the bare name is refused too.
+    if (out['ampline-claude'] !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') fail('exports: bare require("ampline-claude") is refused', JSON.stringify(out));
+    else console.log('  ok    exports: bare require("ampline-claude") throws ERR_PACKAGE_PATH_NOT_EXPORTED');
+
+    // The CLI is addressed by file path (what the .bin shim and `npx` run), so it still works.
+    const bin = path.join(installed, 'bin', 'ampline-claude.js');
+    const version = spawnSync(process.execPath, [bin, '--version'], { ...childOptions(), cwd: tmp });
+    if (version.status !== 0 || version.stdout.trim() !== pkg.version) {
+      fail('exports: installed CLI --version', `exit ${version.status} out ${JSON.stringify(version.stdout)} err ${version.stderr}`);
+    } else console.log('  ok    exports: the installed CLI still runs --version');
+    const render = spawnSync(process.execPath, [bin], {
+      ...childOptions({ COLUMNS: '120', NO_COLOR: '1' }), cwd: tmp,
+      input: fs.readFileSync(path.join(FIXTURES, 'full.json'), 'utf8'),
+    });
+    if (render.status !== 0 || !render.stdout.trim()) fail('exports: installed CLI renders a statusline', `exit ${render.status} err ${render.stderr}`);
+    else console.log('  ok    exports: the installed CLI still renders a statusline');
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+  }
+}
+
 function runSourceHygieneTests() {
   const roots = ['bin', 'lib', 'test', 'scripts', '.github', 'diagrams'];
   const rootFiles = ['README.md', 'CHANGELOG.md', 'CLAUDE.md', 'DECISIONS.md', 'SECURITY.md', 'package.json', 'LICENSE'];
@@ -2427,6 +2491,7 @@ function main() {
   runGitTrustTests();
   runRobustnessTests();
   runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail });
+  runExportsTests();
   runSourceHygieneTests();
 
   // NO_COLOR must strip every escape sequence.
