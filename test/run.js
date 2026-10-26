@@ -3,6 +3,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { runInstallerTests } = require('./installer');
 
 // In-process requires must not see a developer's redirected config dir either.
 delete process.env.CLAUDE_CONFIG_DIR;
@@ -2156,6 +2157,7 @@ function main() {
   runInvisibleCharacterTests();
   runConfigHardeningTests();
   runGitTrustTests();
+  runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail });
   runSourceHygieneTests();
 
   // NO_COLOR must strip every escape sequence.
