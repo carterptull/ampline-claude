@@ -34,14 +34,17 @@ function printHelp() {
   console.log(`ampline-claude — a zero-dependency statusline for Claude Code
 
 Usage:
-  npx ampline-claude --install    Install into ~/.claude/settings.json
-  npx ampline-claude              Same, but only from an interactive terminal
-  npx ampline-claude uninstall    Remove settings entries, runtime, and cache
-  npx ampline-claude --version    Print version
-  npx ampline-claude --help       This message
+  npx ampline-claude --install      Install into ~/.claude/settings.json
+  npx ampline-claude                Same, but only from an interactive terminal
+  npx ampline-claude uninstall      Remove settings entries, runtime, and cache
+  npx ampline-claude --uninstall    Same as uninstall
+  npx ampline-claude -v, --version  Print version
+  npx ampline-claude -h, --help     This message
 
-When invoked by Claude Code, reads a JSON payload on stdin and prints a
-status line. --subagent renders the subagent panel rows instead.`);
+Claude Code runs the installed copy with a JSON payload on stdin and it prints
+the status line. With --subagent it prints the subagent panel rows instead.
+
+Website and live demo: https://ampline.js.org`);
 }
 
 function main() {
