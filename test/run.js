@@ -1786,7 +1786,7 @@ function runGitTrustTests() {
 
   // `setup(home, proj)` prepares the repository and may return { cwd } to render from elsewhere,
   // or false when its own setup failed. Returns { out, cacheFiles, setupOk }.
-  const scenario = (setup) => {
+  const scenario = (setup, extraEnv) => {
     const home = makeTempHome();
     const proj = path.join(home, 'proj');
     fs.mkdirSync(proj, { recursive: true });
@@ -1803,7 +1803,7 @@ function runGitTrustTests() {
       // marker on either.
       for (let attempt = 0; attempt < 2; attempt++) {
         const res = spawnSync(process.execPath, [BIN], {
-          input: JSON.stringify(inlinePayload({ cwd })), encoding: 'utf8', timeout: 20000, cwd: home, env: gitEnv(home),
+          input: JSON.stringify(inlinePayload({ cwd })), encoding: 'utf8', timeout: 20000, cwd: home, env: { ...gitEnv(home), ...extraEnv },
         });
         out += String(res.stdout || '').replace(/\x1b\[[0-9;]*m/g, '') + '\n';
       }
@@ -1929,14 +1929,50 @@ function runGitTrustTests() {
   if (typeof git.buildStatusArgs !== 'function') {
     fail('git trust boundary: buildStatusArgs export', 'buildStatusArgs must be exported from lib/segments/git.js');
   } else {
-    const args = git.buildStatusArgs(path.join(os.tmpdir(), 'a b', '.git'), path.join(os.tmpdir(), 'a b'));
-    const at = (flag) => args.indexOf(flag);
+    const args = git.buildStatusArgs();
     check('the status call ignores dirty submodules (their own config is never scanned)', args.includes('--ignore-submodules=dirty'), JSON.stringify(args));
     check('the status call overrides fsmonitor, forbids implicit bare repositories and takes no optional locks',
       args.includes('core.fsmonitor=') && args.includes('safe.bareRepository=explicit') && args.includes('--no-optional-locks'), JSON.stringify(args));
-    check('the status call is pinned to the scanned git dir and work tree, as separate arguments, before the subcommand',
-      args.includes('--git-dir=' + path.join(os.tmpdir(), 'a b', '.git')) && args.includes('--work-tree=' + path.join(os.tmpdir(), 'a b'))
-      && at('--git-dir=' + path.join(os.tmpdir(), 'a b', '.git')) < at('status') && at('--work-tree=' + path.join(os.tmpdir(), 'a b')) < at('status'), JSON.stringify(args));
+    // --git-dir and --work-tree switch off git's dubious-ownership check, so they must never come
+    // back; git is started in the scanned work tree instead (see getGitState).
+    check('the status call does not use --git-dir or --work-tree (they would bypass the ownership check)',
+      !args.some((a) => /^--(git-dir|work-tree)\b/.test(a)), JSON.stringify(args));
+    check('the status call ends with the subcommand and its own options', args.indexOf('status') > args.indexOf('--no-optional-locks'), JSON.stringify(args));
+  }
+  check('the git child gets GIT_NO_LAZY_FETCH=1 and keeps the rest of the environment',
+    typeof git.buildStatusEnv === 'function' && git.buildStatusEnv({ A: 'b' }).GIT_NO_LAZY_FETCH === '1' && git.buildStatusEnv({ A: 'b' }).A === 'b',
+    'buildStatusEnv');
+
+  // git keeps its dubious-ownership (safe.directory) check because it is started in the work tree
+  // that holds the scanned .git entry and discovers the repository itself. With the test hook that
+  // pretends the repository belongs to someone else, git refuses: no marker, no cache entry.
+  const ownerSetup = (home, proj) => {
+    const deep = path.join(proj, 'sub');
+    fs.mkdirSync(deep, { recursive: true });
+    return { cwd: deep };
+  };
+  const owned = scenario(ownerSetup);
+  check('control: without the ownership hook a subdirectory cwd shows the marker', owned.setupOk && hasMarker(owned.out), JSON.stringify(owned.out));
+  const foreign = scenario(ownerSetup, { GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' });
+  check('a repository git considers owned by someone else: the branch renders, no marker, no cache entry',
+    foreign.setupOk && foreign.out.includes('⎇') && !hasMarker(foreign.out) && foreign.cacheFiles.length === 0, JSON.stringify([foreign.out, foreign.cacheFiles]));
+
+  // A relative working directory is made absolute first, so the directory that is scanned and the
+  // one git runs in agree.
+  if (typeof git.resolveRepo === 'function') {
+    const relRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-rel-'));
+    const here = process.cwd();
+    try {
+      fs.mkdirSync(path.join(relRoot, '.git'));
+      fs.mkdirSync(path.join(relRoot, 'sub'));
+      process.chdir(relRoot);
+      const repo = git.resolveRepo('sub');
+      check('a relative cwd resolves to an absolute git dir and work tree',
+        !!repo && path.isAbsolute(repo.gitDir) && path.isAbsolute(repo.workTree) && path.basename(repo.gitDir) === '.git', JSON.stringify(repo));
+    } finally {
+      process.chdir(here);
+      try { fs.rmSync(relRoot, { recursive: true, force: true }); } catch {}
+    }
   }
 
   // ---- repoConfigIsTrusted on hand-built git dirs ----
@@ -1968,6 +2004,24 @@ function runGitTrustTests() {
     check('an empty commondir is untrusted', withCommon('cd-empty', '') === false && withCommon('cd-empty2', '\n') === false, 'expected false');
     check('a commondir that points at a config with a filter is untrusted',
       (() => { gd('common-bad', { config: '[filter "x"]\n' }); return withCommon('cd-bad', '../common-bad\n'); })() === false, 'expected false');
+
+    // commondir is resolved the way git does it: "<gitdir>/<value>" is handed to realpath as one
+    // string, so a symlink inside the git dir is followed before any ".." is applied (a textual
+    // path.resolve would collapse ".." first). Symlinks are not created here (Windows); a seam
+    // records what is asked and answers with real directories.
+    const seen = [];
+    const realpathTo = (answer) => (p) => { seen.push(p); if (answer instanceof Error) throw answer; return answer; };
+    const seamGit = gd('seam', { config: plainCfg, commondir: '../common/x/..\n' });
+    seen.length = 0;
+    const seamTrusted = trusted(seamGit, { realpath: realpathTo(path.join(trustDir, 'common')) });
+    check('commondir is passed to realpath unnormalised, as "<gitdir>/<value>"', seen.length === 1 && seen[0] === seamGit + '/../common/x/..', JSON.stringify(seen));
+    check('the config of the directory realpath returns is what gets scanned', seamTrusted === true
+      && trusted(seamGit, { realpath: realpathTo(path.join(trustDir, 'common-bad')) }) === false, 'expected true then false');
+    check('a commondir whose realpath fails is untrusted', trusted(seamGit, { realpath: realpathTo(new Error('ELOOP')) }) === false, 'expected false');
+    const absGit = gd('seam-abs', { config: plainCfg, commondir: path.join(trustDir, 'common') + '\n' });
+    seen.length = 0;
+    trusted(absGit, { realpath: realpathTo(path.join(trustDir, 'common')) });
+    check('an absolute commondir is passed to realpath as given', seen.length === 1 && seen[0] === path.join(trustDir, 'common'), JSON.stringify(seen));
   } finally {
     try { fs.rmSync(trustDir, { recursive: true, force: true }); } catch {}
   }
