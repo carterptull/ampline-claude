@@ -2245,6 +2245,36 @@ function runRobustnessTests() {
     }
   }
 
+  // ---- subagents: token formatting, columns, truncation ----
+  const { renderTaskRow, renderSubagentLine } = require('../lib/segments/subagents');
+  const row = (extra, columns) => plainText(renderTaskRow({ id: 't', label: 'worker', ...extra }, columns === undefined ? 120 : columns));
+  const tokensOf = (n) => { const m = row({ tokenCount: n }).match(/worker (.*)$/); return m ? m[1] : ''; };
+  for (const [n, want] of [
+    [1, '1'], [999, '999'], [1000, '1k'], [1049, '1k'], [1050, '1.1k'], [14046, '14k'], [999949, '999.9k'],
+    [999950, '1M'], [999999, '1M'], [1000000, '1M'], [1049999, '1M'], [1050000, '1.1M'], [123456789, '123.5M'],
+  ]) check('a token count of ' + n + ' shows ' + want, tokensOf(n) === want, JSON.stringify(tokensOf(n)));
+  for (const [label, n] of [
+    ['zero', 0], ['negative', -5], ['a fraction', 0.5], ['a tiny fraction', 1e-7], ['1.5', 1.5], ['NaN', NaN], ['Infinity', Infinity],
+    ['an unsafe integer', 2 ** 60], ['1e27', 1e27], ['a string', '5000'], ['true', true], ['null', null], ['an object', {}],
+  ]) check('a token count of ' + label + ' is left out', row({ tokenCount: n }) === '↳ worker', JSON.stringify(row({ tokenCount: n })));
+  check('the largest safe integer prints without exponent notation', /^\d+(\.\d)?M$/.test(tokensOf(Number.MAX_SAFE_INTEGER)), tokensOf(Number.MAX_SAFE_INTEGER));
+
+  // The name budget is 24 characters without a usable width, 32 for a wide one (31 letters and an ellipsis).
+  const longLabel = 'w'.repeat(60);
+  const nameRun = (columns) => {
+    const out = renderSubagentLine({ columns, tasks: [{ id: 't', label: longLabel }] });
+    return out ? (plainText(JSON.parse(out.trim()).content).match(/w+/) || [''])[0].length : -1;
+  };
+  check('columns as a finite positive integer sets the name budget', nameRun(100) === 31 && nameRun(60) === 23, nameRun(100) + ',' + nameRun(60));
+  for (const [label, v] of [['a numeric string', '100'], ['true', true], ['a fraction', 100.5], ['zero', 0], ['negative', -100], ['NaN', NaN], ['Infinity', Infinity], ['an array', [100]], ['an object', { n: 100 }], ['null', null]]) {
+    check('subagent columns as ' + label + ' is ignored (default name budget)', nameRun(v) === 23, String(nameRun(v)));
+  }
+  const huge = 'x'.repeat(1024 * 1024) + String.fromCodePoint(0x1f680).repeat(1000);
+  const hugeRow = row({ label: huge });
+  check('a 1 MB label is cut to the budget with an ellipsis', hugeRow.includes('…') && Array.from(hugeRow).length < 60, String(Array.from(hugeRow).length));
+  const rocketRow = row({ label: String.fromCodePoint(0x1f680).repeat(100) });
+  check('truncation never splits an emoji', !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(rocketRow) && rocketRow.includes('…'), JSON.stringify(rocketRow));
+
 }
 
 function main() {
