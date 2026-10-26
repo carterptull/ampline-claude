@@ -2294,6 +2294,100 @@ function runRobustnessTests() {
   const withLines = costOut(1e9, { total_lines_added: 3, total_lines_removed: 1 });
   check('a capped cost leaves the line counts', withLines === '+3/-1', JSON.stringify(withLines));
 
+  // ---- config: walk-up precedence and depth, line2From ----
+  const { validateAndMerge, MAX_WALK_UP } = require('../lib/config');
+  check('the walk-up depth is one exported constant', Number.isInteger(MAX_WALK_UP) && MAX_WALK_UP > 0, String(MAX_WALK_UP));
+  // `files` maps a path inside a throwaway home to a config (object or raw text); renders from `cwdParts`.
+  const configRun = ({ files, cwdParts }) => {
+    const h = makeTempHome();
+    try {
+      for (const [rel, content] of Object.entries(files)) {
+        const p = path.join(h, rel);
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, typeof content === 'string' ? content : JSON.stringify(content), 'utf8');
+      }
+      const r = spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(inlinePayload({ cwd: path.join(h, ...cwdParts) })), encoding: 'utf8', timeout: 20000, cwd: h,
+        env: { ...cleanEnv(), HOME: h, USERPROFILE: h, COLUMNS: '200' },
+      });
+      return plainText(r.stdout || '');
+    } finally {
+      try { fs.rmSync(h, { recursive: true, force: true }); } catch {}
+    }
+  };
+  const seg = { segments: ['model', 'context'] };
+  const nested = configRun({
+    files: { 'a/.amplinerc.json': { ...seg, separator: ' AA ' }, 'a/b/c/.amplinerc.json': { separator: ' CC ' } },
+    cwdParts: ['a', 'b', 'c'],
+  });
+  check('the nearest .amplinerc.json wins', nested.includes(' CC ') && !nested.includes(' AA '), JSON.stringify(nested));
+  check('files are never merged: the segment list of a parent file is not applied to the nearest one',
+    nested.split(' CC ').length > 2, JSON.stringify(nested));
+  const fallthrough = configRun({
+    files: { 'a/.amplinerc.json': { ...seg, separator: ' AA ' }, 'a/b/.amplinerc.json': '{ this is not json' },
+    cwdParts: ['a', 'b', 'c'],
+  });
+  check('an unparseable nearer config is skipped and the walk continues upward', fallthrough.includes(' AA '), JSON.stringify(fallthrough));
+  const climbed = configRun({ files: { 'a/.amplinerc.json': { ...seg, separator: ' AA ' } }, cwdParts: ['a', 'b', 'c'] });
+  check('a config in an ancestor applies', climbed.includes(' AA '), JSON.stringify(climbed));
+  const deep = (n) => ['p', ...Array.from({ length: n }, () => 'd')];
+  const planted = { 'p/.amplinerc.json': { ...seg, separator: ' PP ' } };
+  check('a config ' + (MAX_WALK_UP - 5) + ' levels up is found', configRun({ files: planted, cwdParts: deep(MAX_WALK_UP - 5) }).includes(' PP '), 'expected the config');
+  check('a config more than ' + MAX_WALK_UP + ' levels up is not looked for', !configRun({ files: planted, cwdParts: deep(MAX_WALK_UP + 3) }).includes(' PP '), 'expected the default');
+
+  // line2From: where the second line starts, and what happens for a name that cannot be used.
+  const names = ['dir', 'model', 'context', 'cost'];
+  check('line2From naming a listed segment is kept', validateAndMerge({ segments: names, line2From: 'context' }).line2From === 'context', 'kept');
+  check('line2From not in the list falls back to fiveHour when that is listed',
+    validateAndMerge({ segments: ['dir', 'fiveHour', 'cost'], line2From: 'weekly' }).line2From === 'fiveHour', 'fiveHour');
+  check('line2From not in the list, with no fiveHour, falls back to the middle segment',
+    validateAndMerge({ segments: names, line2From: 'weekly' }).line2From === 'context'
+      && validateAndMerge({ segments: ['dir', 'model', 'cost'] }).line2From === 'model', 'middle');
+  check('a non-string line2From falls back the same way',
+    [5, null, {}, [], true].every((v) => validateAndMerge({ segments: names, line2From: v }).line2From === 'context'), 'middle');
+  check('line2From for a segment removed from the list follows the list, not the allowlist',
+    validateAndMerge({ segments: ['dir', 'cost'], line2From: 'git' }).line2From === 'cost', 'middle of two');
+  check('a single-segment list uses that segment', validateAndMerge({ segments: ['dir'], line2From: 'cost' }).line2From === 'dir', 'dir');
+  const wrapRun = (config, columns) => {
+    const h = makeTempHome();
+    try {
+      fs.writeFileSync(path.join(h, '.amplinerc.json'), JSON.stringify(config), 'utf8');
+      const r = spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(inlinePayload({ cwd: h, cost: { total_cost_usd: 1.5 } })), encoding: 'utf8', timeout: 20000, cwd: h,
+        env: { ...cleanEnv(), HOME: h, USERPROFILE: h, COLUMNS: String(columns) },
+      });
+      return plainText(r.stdout || '').trim();
+    } finally {
+      try { fs.rmSync(h, { recursive: true, force: true }); } catch {}
+    }
+  };
+  const three = { segments: ['model', 'context', 'cost'] };
+  const wrapped = wrapRun({ ...three, line2From: 'cost' }, 20);
+  check('line2From starts the second line at that segment when the line is too wide',
+    wrapped.split('\n').length === 2 && wrapped.split('\n')[0].startsWith('Haiku 5.5') && wrapped.split('\n')[1] === '$1.50', JSON.stringify(wrapped));
+  check('the same config stays on one line when it fits', !wrapRun({ ...three, line2From: 'cost' }, 200).includes('\n'), 'one line');
+  check('line2From set to the first segment never wraps', !wrapRun({ ...three, line2From: 'model' }, 20).includes('\n'), 'one line');
+  check('a line2From segment that renders nothing leaves a single line',
+    !wrapRun({ segments: ['model', 'context', 'fiveHour'], line2From: 'fiveHour' }, 20).includes('\n'), 'one line');
+
+  // The git walk-up uses the same depth as the config walk-up.
+  const gitDepth = (n) => {
+    const h = makeTempHome();
+    try {
+      const top = path.join(h, 'g');
+      fs.mkdirSync(path.join(top, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(top, '.git', 'HEAD'), 'ref: refs/heads/walkup\n', 'utf8');
+      const r = spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(inlinePayload({ cwd: path.join(top, ...Array.from({ length: n }, () => 'd')) })), encoding: 'utf8', timeout: 20000, cwd: h,
+        env: { ...cleanEnv(), HOME: h, USERPROFILE: h, COLUMNS: '200' },
+      });
+      return plainText(r.stdout || '');
+    } finally {
+      try { fs.rmSync(h, { recursive: true, force: true }); } catch {}
+    }
+  };
+  check('a repository ' + (MAX_WALK_UP - 5) + ' levels up is found', gitDepth(MAX_WALK_UP - 5).includes('⎇ walkup'), JSON.stringify(gitDepth(MAX_WALK_UP - 5)));
+  check('a repository more than ' + MAX_WALK_UP + ' levels up is not looked for', !gitDepth(MAX_WALK_UP + 3).includes('⎇'), JSON.stringify(gitDepth(MAX_WALK_UP + 3)));
 }
 
 function main() {
