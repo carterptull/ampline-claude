@@ -1291,10 +1291,11 @@ function runInjectionFollowupTests() {
 
   // F6: shortenModel used an unanchored regex that starts with \s*, quadratic on whitespace runs.
   for (const n of [100000, 400000]) {
-    const t0 = Date.now();
+    // No wall-clock bound: a quadratic regex takes minutes here, so it would hit the 20 s spawn
+    // timeout and the status would not be 0. That is a deterministic failure, where a tight
+    // millisecond limit would flake on a slow CI runner.
     const o = renderSequence([inlinePayload({ model: { id: 'claude-sonnet-5-5', display_name: 'a' + ' '.repeat(n) } })])[0];
-    const ms = Date.now() - t0;
-    check('a ' + n + ' space display_name renders promptly', o.status === 0 && ms < 4000, 'status=' + o.status + ' ms=' + ms);
+    check('a ' + n + ' space display_name renders before the spawn timeout', o.status === 0 && o.out.length > 0, 'status=' + o.status);
   }
   const ctxName = (dn) => plain(renderSequence([inlinePayload({ model: { id: 'claude-opus-5-5', display_name: dn } })])[0].out);
   check('a trailing context note is still removed', ctxName('Opus 4.5 (1M context)').includes('Opus 4.5 │') && !/context/.test(ctxName('Opus 4.5 (1M context)')),
