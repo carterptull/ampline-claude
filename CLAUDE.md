@@ -65,7 +65,8 @@ lib/
   safeRead.js              readSmallTextFile(path, maxBytes?) -> string | null. The only way to read
                             a file from a checkout we do not control (.amplinerc.json, .git, HEAD,
                             repo-local git config): regular files of at most 64 KB by default,
-                            checked again on the open descriptor; null on anything else.
+                            checked again on the open descriptor (opened non-blocking); null on anything
+                            else. The frozen limits are in D48.
   usage.js                 stdin rate_limits -> write-through cache -> resolveUsage(). Synchronous.
                             Also the window pace math: elapsedFraction, paceRampPct (D39, D40).
   config.js                .amplinerc.json loader: walk up from cwd, then home, first file wins.
@@ -97,11 +98,12 @@ lib/
                                (a real defense: no index write, so no post-index-change hook),
                                `--ignore-submodules=dirty` (a dirty submodule work tree does not
                                set the marker), `safe.bareRepository=explicit`; run with cwd = the
-                               work tree holding the scanned `.git` entry and
-                               `GIT_CEILING_DIRECTORIES` = its parent so git cannot walk above it,
+                               REAL path of the work tree holding the scanned `.git` entry
+                               (`gitStartDir`) and `GIT_CEILING_DIRECTORIES` = that real path's
+                               parent, so a rejected entry makes git fail instead of climbing,
                                NEVER `--git-dir` / `--work-tree`, which would skip git's ownership
                                check; the `.git` dir must also pass a mirror of git's
-                               `is_git_directory`). If the
+                               `is_git_directory`, with HEAD read untrimmed). If the
                                repo's OWN config (config, config.worktree, and a linked
                                worktree's common dir via `commondir`, resolved by real path the
                                way git does) defines a `[filter ...]`, `[include]` or

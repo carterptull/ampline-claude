@@ -199,9 +199,9 @@ See `DECISIONS.md` D40.
 
 Drop a `.amplinerc.json` in your project root (or `~/.amplinerc.json` for a global default).
 The nearest one wins. The search starts at the directory Claude Code reports for the session
-(`workspace.current_dir`, or `cwd`), climbs at most 30 directories, and then tries your home
-directory. Files don't merge together. Finding the git repository for the branch uses the same
-30-level limit.
+(`workspace.current_dir`, or `cwd`), checks at most 30 directories, starting with the session
+directory, and then tries your home directory. Files don't merge together. Finding the git
+repository for the branch uses the same 30-directory limit.
 
 ```json
 {
@@ -313,9 +313,11 @@ from one `git status` call, and git follows the repository's own configuration, 
 you run it yourself. ampline-claude turns off `core.fsmonitor` for that call, does not let it
 write the index, does not run git inside submodules (a submodule with a dirty work tree does not
 set the dirty marker; a moved submodule commit still does), starts git in the work tree it
-inspected and stops it looking above that directory (git keeps its own ownership check), and
-skips the call entirely when the repository's own config defines a content filter or an include. Global and system config (a Git LFS filter you installed, for example) are yours and are
-not checked. This narrows what a repository can make git do on every render; it is not a
+inspected and sets a ceiling directly above it, so that if git rejects that repository it fails
+rather than climbing into another one (git keeps its own ownership check), and skips the call
+entirely when the repository's own config defines a content filter or an include. Global and
+system config (a Git LFS filter you installed, for example) are yours and are not checked. This
+narrows what a repository can make git do on every render; it does not remove it and is not a
 sandbox. Treat a directory you did not clone yourself (an unpacked archive, for example) as you
 would before running git in it.
 </details>

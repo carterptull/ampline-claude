@@ -199,4 +199,4 @@ deliberately synchronous. [`../CLAUDE.md`](../CLAUDE.md) flags this and it is no
 See also [`deployment-security.md`](deployment-security.md).
 
 ---
-_Last updated: 2026-10-26 · reflects v1.0.0_
+_Last updated: 2026-10-26 · reflects the unreleased 1.0.0 work_

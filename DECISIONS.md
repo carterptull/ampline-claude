@@ -375,7 +375,7 @@ to the `execFileSync('git', ...)` argv in `git.js`. The second flag is independe
 having regardless of the security angle — without it, the statusline was taking the index lock
 every 30s (`refreshInterval`) and could contend with a concurrent interactive git command.
 
-**Follow-up (2026-10-25): the fsmonitor override was not the whole story.** An audit before 1.0
+**Follow-up (2026-10-25): the fsmonitor override was not the whole story.** A review before 1.0
 found that this entry, and the CHANGELOG line and diagram text that repeat it, claimed more than
 `-c core.fsmonitor=` delivers. That flag closes one mechanism. `git status` also runs content
 filter drivers that a repository's own config defines and that `.gitattributes` selects, and it
@@ -416,8 +416,17 @@ fixes, and what is deliberately not done:
   necessarily END there: a `.git` directory that fails git's `is_git_directory` check (HEAD,
   `objects/`, `refs/`) is skipped by git, which then walks up to a parent repository ampline never
   scanned. So ampline mirrors that check (failing it skips the call) and also sets
-  `GIT_CEILING_DIRECTORIES` to the work tree's parent, which keeps git inside the scanned work
-  tree (it fails instead of walking up) without giving up discovery or the ownership check.
+  `GIT_CEILING_DIRECTORIES` to the work tree's parent, so that a rejected entry makes git fail
+  instead of climbing, without giving up discovery or the ownership check. A final review found
+  two ways that was weaker than it sounded, both fixed: the mirror trimmed HEAD, which git does
+  not (git skips no whitespace before `ref:` or an object id, so " ref: refs/heads/x" passes a
+  trimmed check and fails git's) and did not test that `objects/` and `refs/` are searchable
+  (`access(X_OK)`); and git compares the ceiling with the REAL path of its cwd, so for a work tree
+  reached through a symlink or junction a ceiling built from the logical path let git climb out
+  (verified with a junction and a rejected entry: git reported the outer repository). Git is now
+  started at the real path of the work tree, its parent is the ceiling, and the call is skipped
+  if the real path cannot be resolved or its parent contains the path-list separator. "Cannot
+  walk above" is not claimed: the ceiling makes a rejected entry fail, it does not make git safe.
   `--git-dir` and `--work-tree` were tried and rejected: they skip discovery and with it the
   ownership check (with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`, unpinned git refuses and pinned git
   runs). Do not re-add them. `-c safe.bareRepository=explicit` is added; `GIT_NO_LAZY_FETCH=1`
@@ -444,6 +453,13 @@ What this does and does not block, stated precisely:
   it is not a sandbox.
 - Not scanned on purpose: global and system config (a user's own LFS filter, for example, keeps
   working because it is not repo-local).
+- Older git, accepted residuals: before git 2.39.4/2.45.1 (depending on the release series)
+  `GIT_NO_LAZY_FETCH` is ignored, so a partial clone can fetch from its remote during the status
+  call; before 2.38 `safe.bareRepository` is ignored. Neither is detected by running
+  `git --version` on every render (a second subprocess). Treating `partialclone` and `promisor`
+  as untrusted in the scan was considered and not done: a partial clone is a normal repository
+  and plenty of people use one, so it would hide the marker for them, and the new gits already
+  stop the fetch.
 
 **Alternatives considered:** requiring the repo directory to be owned by the current user (cheap
 but platform-specific and does not cover a user who unpacked the archive themselves); dropping
@@ -1155,7 +1171,7 @@ code points outside the ranges listed, since the table is deliberately minimal.
 
 ### D44. The installer refuses to rewrite without a backup, matches only its own commands, and prefers a durable node path
 
-An audit of `lib/install.js`, the one module that can destroy a user's configuration, found
+A review of `lib/install.js`, the one module that can destroy a user's configuration, found
 four ways it could do the wrong thing quietly, and that nothing tested it.
 
 - **Backups.** `pruneBackups` removed every file that started with `settings.json.backup.`
@@ -1167,8 +1183,9 @@ four ways it could do the wrong thing quietly, and that nothing tested it.
   so a failure leaves the runtime copy as it was too. Uninstall does the same, and removes nothing.
 - **Which commands are ours.** `pointsAtUs` accepted any command that contained
   `ampline-claude`, so a user's `~/bin/ampline-claude-wrap.sh` was deleted by uninstall and
-  replaced by install without a notice. It now accepts only `node` (bare, or an absolute path to
-  a file named `node` or `node.exe`) followed by the quoted installed entry,
+  replaced by install without a notice. It now accepts only a node interpreter (bare, or an
+  absolute path to a file named `node`, `node.exe`, `nodejs` or a versioned name such as `node24`;
+  the name of the running Node is accepted too, since that is what install writes) followed by the quoted installed entry,
   `<dir>/hooks/ampline-claude/bin/ampline-claude.js`, with or without `--subagent`; the
   README's manual-install shape matches. Anything else is foreign. Install announces a foreign
   entry (now for `subagentStatusLine` as well as `statusLine`) and replaces it after a backup.
@@ -1177,7 +1194,7 @@ four ways it could do the wrong thing quietly, and that nothing tested it.
   uninstall removed the other entry. A foreign entry that has nothing to do with ampline does not
   keep the runtime when one of ours was removed; when nothing of ours was found and a foreign
   entry exists, uninstall touches nothing at all.
-- **Node path (K2, amends D27).** D27 wrote `process.execPath`. Node resolves that through
+- **Node path (amends D27).** D27 wrote `process.execPath`. Node resolves that through
   realpath, so Homebrew gives `/opt/homebrew/Cellar/node/<version>/bin/node`, and `brew
   upgrade` plus its cleanup deletes it: the statusline goes blank with no message, the failure
   D27 set out to prevent. `chooseNodePath` (pure, with `execPath`, the PATH entries, `realpath`
@@ -1253,10 +1270,13 @@ relative requires (`../lib/...`) are ordinary file paths too, so `npx ampline-cl
 `ampline-claude` command, and the statusline command the installer writes keep working. The
 installer's command is `node <dir>/hooks/ampline-claude/bin/ampline-claude.js`, a file path.
 
-**The sister website is not affected.** Its sync script reads `node_modules/ampline-claude/lib/*.js`
-and `package.json` from disk with `readFileSync` and wraps them itself; it never `require`s or
-`import`s the package by name, so `exports` does not apply to it. That arrangement is why `lib/` stays
-a flat set of files with CommonJS source that can be copied verbatim.
+**The sister website is not affected.** Its sync script reads an explicit list of files (its
+`VENDORED` list) from `node_modules/ampline-claude/lib/`, plus `package.json`, from disk with
+`readFileSync` and wraps them itself; it never `require`s or `import`s the package by name, so
+`exports` does not apply to it. That arrangement is why `lib/` stays a flat set of files with
+CommonJS source that can be copied verbatim. Because the list is explicit, a new module under
+`lib/` (such as `safeRead.js`) has to be added to it on the website side, or the website's
+runtime fails to find it.
 
 **Tests.** `test/run.js` copies the files npm would ship (the `files` allowlist) into
 `node_modules/ampline-claude` under a throwaway directory and resolves the package from a consumer
@@ -1303,3 +1323,58 @@ Recorded as the maintainer's confirmations, not as results of this repository's 
   does not cover a terminal or font Carter did not name.
 - The `task` segment's input, Claude Code's local todo files, is an undocumented convention. It is
   best-effort and outside the compatibility promise (see the D42 follow-up).
+
+### D48. The 1.0 limits on what a checkout can feed ampline, and the config walk-up that is not narrowed (2026-10-26)
+
+A `.amplinerc.json`, a `.git` file, `HEAD` and a repository's own git config all come from a
+directory the user may have only just cloned or unpacked, and stdin comes from another program. At
+1.0 these limits are frozen as part of how ampline treats that input. They are the limits the
+pre-1.0 hardening branch landed; none of them is a promise about rendering, only a bound on the work
+and the output.
+
+**Decision:**
+- `separator` is cut to 16 code points (the work done before that cut is itself bounded to 4,096
+  characters), and a separator that is not a string falls back to the default.
+- `maxBranchLength` and `maxTaskLength` are floored and clamped to 5..200. `segments` keeps each
+  name once (nine at most), unknown names are dropped.
+- `.amplinerc.json`, a `.git` file and `HEAD` are read only if they are regular files of at most
+  64 KB (checked on the path, then again on the open descriptor, which is opened non-blocking where
+  the platform has `O_NONBLOCK`). A repository's own git config is read up to 256 KB. A symlink to a
+  device or a FIFO, an oversized file and an unreadable file count as absent, or, for the git config,
+  as untrusted.
+- stdin is read up to 8 MB. Past that nothing is rendered and the exit code stays 0.
+- The config search and the git repository search each check at most 30 directories, starting with
+  the session directory, and the config search then tries the home directory.
+
+**Why:** a config file loads automatically from any checkout, so every value it carries is bounded
+before it reaches the line, and every read is of a small regular file so a hostile checkout cannot
+make a render hang (a FIFO or `/dev/zero`) or flood (a huge file). The numbers are ceilings
+generous enough that no real setup meets them (a separator of 16 code points, branch names of 200
+characters, a 64 KB config) and small enough to keep the work per render trivial. The two walks
+share one depth so that the repository ampline shows a branch for and the config it applies cannot
+disagree about how far up the tree is looked.
+
+**Accepted residual, not implemented: the config walk-up through other people's directories.** The
+config search climbs from the session directory toward the root, so with a session directory such
+as `/tmp/x/y` it can load `/tmp/.amplinerc.json`, a file any local user could have planted in a
+shared directory. Two ways to narrow it were considered and not taken:
+- *Checking that each directory, or the file, is owned by the current user.* Ownership and the
+  sticky-bit rules of shared directories behave differently on macOS, Linux and Windows, and the
+  check would need per-OS branches that cannot all be tested here. A check that is right on one OS
+  and silently off on another is worse than a documented residual.
+- *Stopping the walk at the home directory or the first `.git` entry.* That changes where a config
+  is found, which is part of the frozen public surface (`.amplinerc.json` in a project root or the
+  home directory, nearest wins).
+
+It is accepted because what a config can do is display-only: it picks which segments show, their
+order, where the second line starts, the separator, two truncation lengths, the color
+switch and `paceColors`. None of it names a path or a
+command, and every value is validated and bounded as above, so the worst a planted file does is
+make the line look different. After the depth cap (30 directories) and the bounded reads,
+reading it costs nothing a user would notice. This is the same trust the user places in a
+repository's own `.amplinerc.json`, widened to a shared parent directory.
+
+**Alternatives considered:** a configurable depth (more surface to freeze); validating the whole
+file against a schema with unknown-key errors (a typo in a hand-written config would blank the
+statusline instead of being ignored); sandboxing the read with a child process (a subprocess per
+render for a display setting).
