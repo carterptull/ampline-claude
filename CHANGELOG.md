@@ -91,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   profile above the temp directory cannot change a result.
 - **Cache files no longer collide, and a failing `git status` is remembered.** Every cache key now carries a hash of itself, so repositories at `/x/a.b` and `/x/a_b` no longer share one `git:` entry (old entries are simply left to expire). A `git status` that fails or times out is not retried for 30 seconds, so a slow repository no longer pays the 400 ms timeout on every render; the branch still shows, without the marker.
 - **Subagent rows reject malformed counts and widths.** A token count must be a positive safe integer (`0.5`, `1e-7` and `1e27` are left out) and steps to `M` from 999,950 instead of printing `1000k`. `columns` must be a positive integer number, so `true` and `"500"` are ignored. A very long label is cut before it is expanded.
+- **A name of only combining marks, and a cost that rounds up to the cap, no longer print.** A model `display_name` that has no visible width falls back to the model id, and a cost of `999999999.999` is left out instead of printing `$1000000000.00`.
 
 ### Security
 - **`git status` is no longer run in a repository whose own config defines a filter or an include.**

@@ -2275,6 +2275,25 @@ function runRobustnessTests() {
   const rocketRow = row({ label: String.fromCodePoint(0x1f680).repeat(100) });
   check('truncation never splits an emoji', !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(rocketRow) && rocketRow.includes('…'), JSON.stringify(rocketRow));
 
+  // ---- model: a name that is only combining marks is not a name ----
+  const { renderModelSegment } = require('../lib/segments/model');
+  const modelOut = (m) => plainText(renderModelSegment({ input: { model: m } }) || '');
+  const marks = String.fromCharCode(0x301).repeat(3);
+  check('a combining-marks-only display_name falls back to the id',
+    modelOut({ id: 'claude-sonnet-5-5', display_name: marks }) === 'claude-sonnet-5-5', JSON.stringify(modelOut({ id: 'claude-sonnet-5-5', display_name: marks })));
+  check('a combining-marks-only display_name and id leave no segment', renderModelSegment({ input: { model: { id: marks, display_name: marks } } }) === null, 'expected null');
+  check('a name with a base letter plus marks still shows', modelOut({ display_name: 'e' + marks }) === 'e' + marks, JSON.stringify(modelOut({ display_name: 'e' + marks })));
+
+  // ---- cost: the cap applies after rounding ----
+  const { renderCostSegment } = require('../lib/segments/cost');
+  const costOut = (usd, extra) => plainText(renderCostSegment({ input: { cost: { total_cost_usd: usd, ...(extra || {}) } } }) || '');
+  check('999999999.999 does not round up to $1000000000.00', costOut(999999999.999) === '', JSON.stringify(costOut(999999999.999)));
+  check('999999999.995 is left out too', costOut(999999999.995) === '', JSON.stringify(costOut(999999999.995)));
+  check('999999999.994 still prints', costOut(999999999.994) === '$999999999.99', JSON.stringify(costOut(999999999.994)));
+  check('a normal cost still prints', costOut(1.236) === '$1.24' && costOut(0) === '$0.00', JSON.stringify([costOut(1.236), costOut(0)]));
+  const withLines = costOut(1e9, { total_lines_added: 3, total_lines_removed: 1 });
+  check('a capped cost leaves the line counts', withLines === '+3/-1', JSON.stringify(withLines));
+
 }
 
 function main() {
