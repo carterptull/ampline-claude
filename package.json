@@ -1,7 +1,7 @@
 {
   "name": "ampline-claude",
-  "version": "0.6.0",
-  "description": "A color-graded, zero-dependency statusline for Claude Code — a 20-step model/effort color wheel, context and rate-limit usage, git state, and session cost, all on one line.",
+  "version": "1.0.0",
+  "description": "A color-graded, zero-dependency statusline for Claude Code — a 20-step model/effort color wheel, context and rate-limit usage, git state, and session cost.",
   "bin": { "ampline-claude": "./bin/ampline-claude.js" },
   "exports": { "./package.json": "./package.json" },
   "files": ["bin", "lib", ".amplinerc.json.example", "README.md", "LICENSE"],
@@ -9,7 +9,7 @@
   "keywords": ["claude-code", "statusline", "cli", "terminal", "anthropic", "zero-dependency"],
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/carterptull/ampline-claude.git" },
-  "homepage": "https://github.com/carterptull/ampline-claude#readme",
+  "homepage": "https://ampline.js.org/",
   "bugs": { "url": "https://github.com/carterptull/ampline-claude/issues" },
   "author": "Carter Tull (Paymon Software)",
   "scripts": {
