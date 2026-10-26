@@ -216,7 +216,7 @@ non-zero exit from the statusline path, never a partial/garbled line. Specifical
 | Data | Key | Fresh | Stale | Why |
 |---|---|---|---|---|
 | Usage | `usage` | n/a (write-through) | 24h + resets_at rollover check | stdin is authoritative when present; cache only covers cold start |
-| Git state | `git:<gitdir>` | 5s | 60s | one subprocess call; 5s is below human perception for branch/dirty changes. A failed or timed-out call is stored as `{ failed: true }` and not retried for 30s, so a slow repo does not pay the 400ms timeout on every render (a good entry under 60s old is served instead, and kept) |
+| Git state | `git:<gitdir>` | 5s | 60s | one subprocess call; 5s is below human perception for branch/dirty changes. A failed or timed-out call is stored as `{ failed: true }` and not retried for 30s, so a slow repo does not pay the 400ms timeout on every render. If a good entry 5-60s old exists it is served instead and kept, with no marker written, so the timeout is still paid until it ages out |
 | Current task | `task:<session_id>` | 3s | 15s | filesystem I/O; todos don't change faster than this |
 
 ## Diagrams

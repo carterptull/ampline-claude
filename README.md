@@ -198,8 +198,10 @@ See `DECISIONS.md` D40.
 ## Configuration
 
 Drop a `.amplinerc.json` in your project root (or `~/.amplinerc.json` for a global default).
-The nearest one wins. It searches from the current directory upward to the filesystem root,
-then your home directory. Files don't merge together.
+The nearest one wins. The search starts at the directory Claude Code reports for the session
+(`workspace.current_dir`, or `cwd`), climbs at most 30 directories, and then tries your home
+directory. Files don't merge together. Finding the git repository for the branch uses the same
+30-level limit.
 
 ```json
 {
@@ -274,6 +276,9 @@ No. It runs entirely locally, no API calls of any kind. Rendering is a handful o
 and, at most, one cached `git status` call every 5 seconds. Typical render time is a few
 milliseconds. The worst case, a cache miss on a large repo, is capped at 400ms, and a `git status`
 that fails or times out is not retried for 30 seconds, so a slow repo does not pay for it on every render.
+The cost of that: after one transient failure the branch shows without its marker for up to 30 seconds.
+And if an earlier result between 5 and 60 seconds old exists, it is shown instead and no pause is
+started, so a repo that is always slow still pays the 400ms until that result ages out.
 </details>
 
 <details>

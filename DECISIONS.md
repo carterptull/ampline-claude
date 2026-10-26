@@ -452,6 +452,17 @@ asking git to parse the config (`git config`) would add a second subprocess to e
 scanner is a conservative header check, not a full config parser, and errs toward skipping the
 call.
 
+**Follow-up (2026-10-26): hashed cache keys and a failure marker.** Cache file names always end in
+a hash of the raw key (`git:/x/a.b` and `git:/x/a_b` used to share a file). A `git status` that
+fails or times out now stores `{ "failed": true }`, and for 30 seconds the call is skipped
+(branch only, no marker), so a repository whose status never finishes in 400 ms does not pay that
+on every render. Two consequences, both accepted: a single transient failure (a cold disk cache,
+say) hides the marker for up to 30 seconds; and when the failure happens while a good result 5 to
+60 seconds old exists, that result is served and kept, and no marker is written, so a slow
+repository still pays the 400 ms timeout on each render until that result ages out (then the
+marker takes over). The trust scan above still runs before the cache is read, and a failure
+marker holds nothing a repository could influence.
+
 ### D21. Surrogate-pair-unsafe truncation fixed in three segments
 
 `truncateBranch` (`git.js`), `decorate` (`task.js`), and `truncate` (`subagents.js`) all
