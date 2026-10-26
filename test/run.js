@@ -16,9 +16,18 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 // enough: an earlier fixture with live rate_limits legitimately write-throughs
 // a cache entry that a later fixture (e.g. no-rate-limits.json) would then
 // inherit. Per-fixture isolation is what makes each scenario independent.
-function makeTempHome() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-home-'));
+//
+// The home gets an empty `.amplinerc.json` ({} means "all defaults"). The config walk goes from the
+// working directory upward and the first file found wins, so for any render whose directory is the
+// home or inside it, this file ends the walk here. Without it the walk continues into the parents,
+// and on Windows os.tmpdir() lives inside the user profile, which can hold the developer's own
+// .amplinerc.json. Seeded tests overwrite it. A payload whose cwd is somewhere else entirely (a
+// fixture's /tmp/project) still walks that directory's own ancestors first, then this home.
+// `parent` exists so a test can place a home under a directory it controls.
+function makeTempHome(parent = os.tmpdir()) {
+  const dir = fs.mkdtempSync(path.join(parent, 'ampline-test-home-'));
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.amplinerc.json'), '{}\n', 'utf8');
   return dir;
 }
 
