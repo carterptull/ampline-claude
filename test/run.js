@@ -1942,6 +1942,102 @@ function runGitTrustTests() {
   check('the git child gets GIT_NO_LAZY_FETCH=1 and keeps the rest of the environment',
     typeof git.buildStatusEnv === 'function' && git.buildStatusEnv({ A: 'b' }).GIT_NO_LAZY_FETCH === '1' && git.buildStatusEnv({ A: 'b' }).A === 'b',
     'buildStatusEnv');
+  if (typeof git.buildStatusEnv === 'function') {
+    const inherited = {
+      A: 'b', GIT_DIR: '/x', GIT_WORK_TREE: '/x', GIT_COMMON_DIR: '/x', GIT_INDEX_FILE: '/x', GIT_OBJECT_DIRECTORY: '/x',
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: '/x', GIT_NAMESPACE: 'n', GIT_CEILING_DIRECTORIES: '/elsewhere',
+    };
+    const cleaned = git.buildStatusEnv(inherited, path.join(os.tmpdir(), 'wt'));
+    check('inherited git location variables are removed from the child environment',
+      ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE'].every((k) => !(k in cleaned)) && cleaned.A === 'b',
+      JSON.stringify(cleaned));
+    check('GIT_CEILING_DIRECTORIES is the parent of the work tree, replacing the inherited value',
+      cleaned.GIT_CEILING_DIRECTORIES === os.tmpdir(), JSON.stringify(cleaned.GIT_CEILING_DIRECTORIES));
+    const rootDir = path.parse(os.tmpdir()).root;
+    check('no GIT_CEILING_DIRECTORIES is set when the work tree is a filesystem root',
+      !('GIT_CEILING_DIRECTORIES' in git.buildStatusEnv(inherited, rootDir)), 'expected it to be omitted');
+  }
+
+  // Git only accepts a .git directory that passes its own is_git_directory check (HEAD, objects/,
+  // refs/); otherwise it silently keeps walking up to a repository ampline never scanned. ampline
+  // mirrors that check, and git cannot leave the scanned work tree (GIT_CEILING_DIRECTORIES).
+  const innerLayout = (full) => (home, proj) => {
+    fs.appendFileSync(path.join(proj, '.git', 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+    const inner = path.join(proj, 'inner');
+    fs.mkdirSync(inner);
+    if (full) return runGit(home, inner, ['init', '-q']).status === 0 ? { cwd: inner } : false;
+    fs.mkdirSync(path.join(inner, '.git'));
+    fs.writeFileSync(path.join(inner, '.git', 'HEAD'), 'ref: refs/heads/inner\n', 'utf8');
+    return { cwd: inner };
+  };
+  const innerControl = scenario(innerLayout(true));
+  check('control: a complete inner repository inside an outer one gets its own marker',
+    innerControl.setupOk && hasMarker(innerControl.out) && innerControl.cacheFiles.length === 1, JSON.stringify([innerControl.out, innerControl.cacheFiles]));
+  const innerBad = scenario(innerLayout(false));
+  check('a .git directory git would reject (only a HEAD file) inside an outer repository: branch from HEAD, no marker, no cache entry',
+    innerBad.setupOk && innerBad.out.includes('⎇ inner') && !hasMarker(innerBad.out) && innerBad.cacheFiles.length === 0, JSON.stringify([innerBad.out, innerBad.cacheFiles]));
+  if (typeof git.resolveRepo === 'function') {
+    const incomplete = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-incomplete-'));
+    try {
+      fs.mkdirSync(path.join(incomplete, '.git'));
+      fs.writeFileSync(path.join(incomplete, '.git', 'HEAD'), 'ref: refs/heads/x\n', 'utf8');
+      const repo = git.resolveRepo(incomplete);
+      check('resolveRepo marks a .git directory that fails git\'s own check as not pinnable', !!repo && repo.pinnable === false, JSON.stringify(repo));
+      fs.mkdirSync(path.join(incomplete, '.git', 'objects'));
+      fs.mkdirSync(path.join(incomplete, '.git', 'refs'));
+      const ok = git.resolveRepo(incomplete);
+      check('resolveRepo accepts a .git directory with HEAD, objects and refs', !!ok && ok.pinnable === true, JSON.stringify(ok));
+    } finally {
+      try { fs.rmSync(incomplete, { recursive: true, force: true }); } catch {}
+    }
+
+    // The gitfile target is resolved the way git does it: "<dir>/<value>" goes to realpath as one
+    // string (symlinks followed before "..") and the git dir is validated THERE. A seam stands in
+    // for realpath here; a real-symlink scenario follows on POSIX.
+    const gfRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-gitfile-'));
+    try {
+      const target = path.join(gfRoot, 'target');
+      for (const d of ['objects', 'refs']) fs.mkdirSync(path.join(target, d), { recursive: true });
+      fs.writeFileSync(path.join(target, 'HEAD'), 'ref: refs/heads/seam\n', 'utf8');
+      const work = path.join(gfRoot, 'work');
+      fs.mkdirSync(work);
+      fs.writeFileSync(path.join(work, '.git'), 'gitdir: a/../b\n', 'utf8');
+      const asked = [];
+      const via = (answer) => (p) => { asked.push(p); if (answer instanceof Error) throw answer; return answer; };
+      const repo = git.resolveRepo(work, { realpath: via(target) });
+      check('the gitfile target is handed to realpath as "<dir>/<value>", unnormalised',
+        asked.length === 1 && asked[0] === work + '/a/../b', JSON.stringify(asked));
+      check('the git dir realpath returns is the one validated (and read for HEAD)',
+        !!repo && repo.realGitDir === target && repo.pinnable === true && repo.gitDir === path.resolve(work, 'a/../b'), JSON.stringify(repo));
+      const failed = git.resolveRepo(work, { realpath: via(new Error('ENOENT')) });
+      check('a gitfile target whose realpath fails is not pinnable', !!failed && failed.pinnable === false, JSON.stringify(failed));
+      const bare = path.join(gfRoot, 'not-a-git-dir');
+      fs.mkdirSync(bare);
+      const rejected = git.resolveRepo(work, { realpath: via(bare) });
+      check('a gitfile target that is not a git directory is not pinnable', !!rejected && rejected.pinnable === false, JSON.stringify(rejected));
+    } finally {
+      try { fs.rmSync(gfRoot, { recursive: true, force: true }); } catch {}
+    }
+  }
+  if (process.platform !== 'win32') {
+    // Real symlinks (POSIX only; CI runs ubuntu and macos): "link/../gd" means <link target>/../gd
+    // to git, but p/gd to a textual reader. Git reads q/gd, which carries a harmless filter section.
+    const symlinked = scenario((home, proj) => {
+      const base = home;
+      const p = path.join(base, 'p');
+      const q = path.join(base, 'q');
+      fs.mkdirSync(p);
+      fs.mkdirSync(path.join(q, 'sub'), { recursive: true });
+      fs.cpSync(path.join(proj, '.git'), path.join(p, 'gd'), { recursive: true });
+      fs.cpSync(path.join(proj, '.git'), path.join(q, 'gd'), { recursive: true });
+      fs.appendFileSync(path.join(q, 'gd', 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+      fs.symlinkSync(path.join(q, 'sub'), path.join(p, 'link'));
+      fs.writeFileSync(path.join(p, '.git'), 'gitdir: link/../gd\n', 'utf8');
+      return runGit(home, p, ['status', '--porcelain']).status === 0 ? { cwd: p } : false;
+    });
+    check('a gitfile target that goes through a symlink before ".." is scanned where git reads it: no marker, no cache entry',
+      symlinked.setupOk && !hasMarker(symlinked.out) && symlinked.cacheFiles.length === 0, JSON.stringify([symlinked.out, symlinked.cacheFiles]));
+  }
 
   // git keeps its dubious-ownership (safe.directory) check because it is started in the work tree
   // that holds the scanned .git entry and discovers the repository itself. With the test hook that
