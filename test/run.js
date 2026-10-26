@@ -1522,6 +1522,24 @@ function runConfigHardeningTests() {
       [Infinity, -Infinity, NaN, '50', null, true, {}, []].every((x) => v(x) === DEFAULT_CONFIG[key]), 'expected default');
   }
 
+  // readSmallTextFile: text for a small regular file, null for everything else, never a throw.
+  {
+    const { readSmallTextFile } = require('../lib/safeRead');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-safe-read-'));
+    try {
+      const f = (name, content) => { const p = path.join(dir, name); fs.writeFileSync(p, content); return p; };
+      check('safeRead returns a small file\'s text', readSmallTextFile(f('a', 'héllo')) === 'héllo', 'expected the text');
+      check('safeRead reads an empty file as an empty string', readSmallTextFile(f('e', '')) === '', 'expected empty string');
+      check('safeRead reads exactly the limit', readSmallTextFile(f('lim', 'a'.repeat(64 * 1024))) !== null, 'expected text');
+      check('safeRead rejects one byte over the limit', readSmallTextFile(f('over', 'a'.repeat(64 * 1024 + 1))) === null, 'expected null');
+      check('safeRead honors a custom limit', readSmallTextFile(f('c', 'abcd'), 3) === null && readSmallTextFile(f('c2', 'abc'), 3) === 'abc', 'custom limit');
+      check('safeRead returns null for a directory', readSmallTextFile(dir) === null, 'expected null');
+      check('safeRead returns null for a missing path', readSmallTextFile(path.join(dir, 'nope')) === null, 'expected null');
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
+  }
+
   // Through the real binary, with the config planted where a cloned repo would put it.
   const repoHead = (dir) => {
     fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
@@ -1552,11 +1570,18 @@ function runConfigHardeningTests() {
     return { res, ms, out: res.stdout || '' };
   };
 
-  // 20,000 copies of "git" used to run the segment 20,000 times (the audit killed it at 60 s).
-  const dupRun = runIn({ segments: new Array(20000).fill('git') });
+  // Thousands of copies of "git" used to run the segment once each (the audit killed 20,000 at
+  // 60 s). The binary run uses the largest list that fits under the 64 KB config cap (9,000
+  // entries, about 54 KB; the 20,000 case is asserted above through validateAndMerge). The
+  // config ends in "model" and leaves out "dir": a config skipped for size would render the
+  // default line instead, which has the directory, so this also proves the config was loaded.
+  const dupConfig = JSON.stringify({ segments: new Array(9000).fill('git').concat('model') });
+  check('fixture fits under the 64 KB config cap', Buffer.byteLength(dupConfig) < 64 * 1024, String(Buffer.byteLength(dupConfig)));
+  const dupRun = runIn(dupConfig);
   const branches = (plain(dupRun.out).match(/⎇/g) || []).length;
-  check('20,000 duplicate git segments exit 0, quickly, and render once',
-    dupRun.res.status === 0 && dupRun.ms < 8000 && branches === 1,
+  check('9,000 duplicate git segments exit 0, quickly, and render once',
+    dupRun.res.status === 0 && dupRun.ms < 8000 && branches === 1 &&
+    plain(dupRun.out).includes('Haiku') && !plain(dupRun.out).includes('proj'),
     `status ${dupRun.res.status}, ${dupRun.ms} ms, ${branches} branches, error ${dupRun.res.error && dupRun.res.error.message}`);
 
   // A huge separator used to be printed whole. (A 5 MB one is covered above through validateAndMerge;
@@ -1653,21 +1678,30 @@ function runConfigHardeningTests() {
 
   // stdin: capped at 8 MB. Past the cap the render prints nothing and still exits 0, with no
   // "no input" hint and no partial output. Under the cap a large payload still renders.
-  const smallOk = runIn(undefined, { input: () => JSON.stringify(inlinePayload({ pad: 'p'.repeat(7 * 1024 * 1024) })) });
-  check('a 7 MB payload under the cap still renders',
+  // One valid payload followed by whitespace: the parsed content is identical either side of the
+  // cap, so the only difference between the runs is whether the cap fires. Every "over" run has a
+  // matching "under" control that proves the same payload prints something without the padding.
+  const MB = 1024 * 1024;
+  const padding = ' '.repeat(9 * MB);
+  const statusPayload = JSON.stringify(inlinePayload({}));
+  const subagentPayload = JSON.stringify({ columns: 80, tasks: [{ id: 'cap-test-1', type: 'local_agent', status: 'running', label: 'cap test row' }] });
+
+  const smallOk = runIn(undefined, { input: () => statusPayload + padding.slice(0, 7 * MB) });
+  check('a payload of 7 MB (under the cap) still renders',
     smallOk.res.status === 0 && plain(smallOk.out).includes('Haiku'), `status ${smallOk.res.status}, ${smallOk.out.length} chars`);
-  const overCap = runIn(undefined, { input: () => JSON.stringify(inlinePayload({})) + ' '.repeat(9 * 1024 * 1024) });
+  const overCap = runIn(undefined, { input: () => statusPayload + padding });
   check('a payload over 8 MB renders nothing, exits 0 and prints no garbage',
     overCap.res.status === 0 && overCap.out === '' && !/no input received/.test(overCap.res.stderr || ''),
     `status ${overCap.res.status}, stdout ${JSON.stringify(overCap.out.slice(0, 80))}, stderr ${JSON.stringify((overCap.res.stderr || '').slice(0, 120))}`);
-  const subHome = makeTempHome();
-  const overCapSub = spawnSync(process.execPath, [BIN, '--subagent'], {
-    input: JSON.stringify({ columns: 80, tasks: [] }) + ' '.repeat(9 * 1024 * 1024), encoding: 'utf8', timeout: 20000, cwd: subHome,
-    env: { ...process.env, HOME: subHome, USERPROFILE: subHome },
-  });
-  try { fs.rmSync(subHome, { recursive: true, force: true }); } catch {}
+
+  const subUnder = spawnRender(subagentPayload + padding.slice(0, 7 * MB), { args: [BIN, '--subagent'] });
+  const subRows = (subUnder.stdout || '').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } });
+  check('--subagent with a 7 MB payload (under the cap) still prints its row',
+    subUnder.status === 0 && subRows.length === 1 && subRows[0] && subRows[0].id === 'cap-test-1',
+    `status ${subUnder.status}, stdout ${JSON.stringify((subUnder.stdout || '').slice(0, 120))}`);
+  const subOver = spawnRender(subagentPayload + padding, { args: [BIN, '--subagent'] });
   check('--subagent over 8 MB prints nothing and exits 0',
-    overCapSub.status === 0 && overCapSub.stdout === '', `status ${overCapSub.status}, stdout ${JSON.stringify((overCapSub.stdout || '').slice(0, 80))}`);
+    subOver.status === 0 && subOver.stdout === '', `status ${subOver.status}, stdout ${JSON.stringify((subOver.stdout || '').slice(0, 80))}`);
 }
 
 function main() {
