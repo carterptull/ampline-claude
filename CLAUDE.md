@@ -59,7 +59,7 @@ bin/ampline-claude.js     Entry point. Six argv-driven paths: --help/-h, --versi
                            uninstall/--uninstall, subagent (stdin piped, --subagent), and the
                            default statusline path (TTY -> installer, piped stdin -> render).
                            The `--help` text names every one of these and is kept in step with
-                           the README's "Commands" table. stdin is capped at 8M characters (D48).
+                           the README's "Commands" table. stdin is capped at 8 Mi characters, 8,388,608 (D48).
                            `if (require.main === module) main();` guards against a bare
                            `require('ampline-claude')` triggering a real install as a side effect.
                            `package.json` declares `exports: { "./package.json": ... }` and no `main`:
@@ -97,7 +97,10 @@ lib/
                             rename (the temp file is created with that mode). Backs up before
                             anything is changed and aborts if it cannot; prunes only the exact
                             settings.json.backup.<stamp> names to the newest 5. `pointsAtUs` matches
-                            only `node "<dir>/hooks/ampline-claude/bin/ampline-claude.js"` (+ --subagent).
+                            only the installed entry `<node> "<dir>/hooks/ampline-claude/bin/ampline-claude.js"`
+                            (+ --subagent), where <node> is bare `node` or an absolute path whose file
+                            name is one the installer can write (NODE_NAME: node, nodejs, node24,
+                            node-24.1, each with an optional .exe, or the running Node's own name).
                             `chooseNodePath` is the pure node-path chooser and `installMessages` the
                             pure output list (D44): a normal install prints exactly v0.6.0's six lines
                             (the website embeds them), and the Node/Note lines appear only for a

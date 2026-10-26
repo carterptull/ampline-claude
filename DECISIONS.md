@@ -1344,9 +1344,12 @@ and the output.
 - `.amplinerc.json`, a `.git` file and `HEAD` are read only if they are regular files of at most
   64 KB (checked on the path, then again on the open descriptor, which is opened non-blocking where
   the platform has `O_NONBLOCK`). A repository's own git config is read up to 256 KB. A symlink to a
-  device or a FIFO, an oversized file and an unreadable file count as absent, or, for the git config,
-  as untrusted.
-- stdin is read up to 8 million characters (UTF-16 units of the decoded text, about 8 MB for
+  device or a FIFO, an oversized file and an unreadable file are treated as follows: a
+  `.amplinerc.json` is skipped like a missing one (the search continues); a `HEAD`, or a `.git` file
+  that is oversized or unreadable, leaves the git segment out; a `.git` that is neither a file nor a
+  directory is skipped like an absent entry; and for the repository's own git config the file is
+  untrusted, so the `git status` call is skipped.
+- stdin is read up to 8 Mi characters, 8,388,608 (UTF-16 units of the decoded text, about 8 MB for
   ASCII). Past that nothing is rendered and the exit code stays 0.
 - The config search and the git repository search each check at most 30 directories, starting with
   the session directory, and the config search then tries the home directory.
@@ -1384,7 +1387,6 @@ file against a schema with unknown-key errors (a typo in a hand-written config w
 statusline instead of being ignored); sandboxing the read with a child process (a subprocess per
 render for a display setting).
 
-
 ### D49. The 1.0 stability policy: what is frozen, and what is only described (2026-10-26)
 
 1.0.0 is where "stable" has to mean something specific, because a statusline has two kinds of
@@ -1397,7 +1399,7 @@ public. This entry fixes the rest.
 change to any of them waits for a major release:
 - The command line: `--install`, `uninstall` and `--uninstall`, `--version` and `-v`, `--help` and `-h`,
   and `--subagent`. Flags are matched anywhere in the arguments and an unknown one is ignored, and
-  that stays. The installer's exit codes (0, or 1 when it cannot safely change `settings.json`) are
+  that stays. The installer's exit codes (0, or 1 when it cannot complete the install safely) are
   part of this. Its printed text is not machine-readable and is not part of it.
 - The `.amplinerc.json` keys `segments`, `line2From`, `separator`, `color`, `paceColors` (opt-in,
   default `false`, D46), `maxBranchLength` and `maxTaskLength`, with their types, defaults and the
@@ -1413,8 +1415,8 @@ The rules the README states are behavior, so they are frozen too: bold only at t
 (color is identity, bold is urgency), usage bars bold from 85% and the warning
 glyph from 95%, and pace, meaning the marker and `paceColors`, never adding bold or the warning
 glyph. What stays free to change in a minor release is how the rules are drawn: the exact glyphs,
-hex colors, spacing and segment labels, and the tuning of pace coloring and of the marker (its 10%
-dead zone, its cap at 84, its projection, D46).
+hex colors, spacing and segment labels, the tuning of pace coloring (its 10% dead zone, its cap at
+84 and its projection, D46), and the marker's placement.
 
 Outside the promise: the `task` segment, because it reads Claude Code's todo files, an
 undocumented convention (D47), so it is best-effort; everything under `lib/` (D45); the statusline

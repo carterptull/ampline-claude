@@ -72,12 +72,16 @@ running git in it.
 A file or stream from a checkout cannot make a render hang or flood the line:
 
 - `.amplinerc.json`, a `.git` file and `HEAD` are read only if they are regular files of at most
-  64 KB. A directory, a device, a FIFO or an oversized file counts as absent.
+  64 KB. An oversized, unreadable or non-regular `.amplinerc.json` is skipped like a missing one and
+  the search continues. An oversized, unreadable or non-regular `HEAD`, or an oversized or unreadable
+  `.git` file, leaves the git segment out. A `.git` that is a directory, or absent, behaves as it
+  always did.
 - A repository's own git config is read up to 256 KB. A larger or unreadable one counts as untrusted,
   and the `git status` call is skipped.
-- stdin is read up to 8 million characters (UTF-16 units of the decoded text, about 8 MB for ASCII).
+- stdin is read up to 8 Mi characters, 8,388,608 (UTF-16 units of the decoded text, about 8 MB for ASCII).
   Past that nothing is rendered, and the exit code is still 0.
-- The config search and the git repository search each look at no more than 30 directories.
+- The config search looks at no more than 30 directories, starting with the session directory, and
+  then tries your home directory. The git repository search stops after the same 30.
 - Config values are bounded: the separator is cut to 16 characters, branch and task lengths are
   capped at 200, and a segment is kept once (`DECISIONS.md` D48).
 

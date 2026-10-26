@@ -116,7 +116,8 @@ and then replaces it, after backing the file up. Backups are named
 | `ampline-claude --subagent` | what Claude Code runs for the subagent panel: reads a payload on stdin and prints one `{"id","content"}` JSON line per row. You do not run it by hand |
 
 Flags are matched anywhere in the arguments, and an unknown one is ignored. Run with no flag, no
-terminal and nothing on stdin, it prints a one-line hint to stderr and exits 0. The installer
+terminal and nothing on stdin, it prints a one-line hint to stderr, renders whatever it can from
+the current directory to stdout, and exits 0. The installer
 prints a few plain lines for a human to read, and that text is not meant to be parsed. Check the
 exit code instead: `0` on success, `1` when it could not read or parse `settings.json`, back it up,
 copy the runtime or write the file.
@@ -381,8 +382,9 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
   Claude's windows are ever different, the marker moves, or disappears when the assumed window is shorter than the real one, and with
   `paceColors` on the color changes too. The percentage and the countdown never do. The marker also
   hides whether its own cell was filled, so the visible fill can be off by one cell there. The
-  number beside the bar stays exact. Its glyph (`┃`) has been checked on Windows and on
-  macOS. Other terminals and fonts have not been tried.
+  number beside the bar stays exact. Its glyph (`┃`) rendered correctly on a real Mac and on
+  Windows (which Mac terminal and font was not recorded, D39). Other terminals and fonts have not
+  been tried.
 - **`paceColors` is a straight-line projection.** It assumes you keep spending at the average
   rate so far, so a short burst early in a long window can turn a bar orange that later settles.
   It does not apply in the first 10% of a window. It is off by default.
@@ -418,15 +420,16 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
   password. Otherwise the number still shows, as plain text. Terminals without hyperlink
   support, such as macOS Terminal.app, show the number without a link. `NO_COLOR` and
   `"color": false` also turn the link off.
-- **Verified on macOS, Linux and Windows hardware.** The statusline render, including the
-  pace marker glyph, is confirmed on a real Mac, on Linux (Ubuntu under WSL), and on Windows, where
-  it was also seen in a live Claude Code session (see `DECISIONS.md` D36, D39 and D47). On Linux
-  the fixture suite, the install and uninstall flow, the shebang, UTF-8 glyph output and color
-  behavior were confirmed, including the absolute Node path a version-managed Node needs. Not
-  confirmed: the environment variables a real Claude Code process supplies on Linux (that check
-  was a controlled invocation, not a live session), terminals and fonts beyond the ones tried, and
-  the installer's choice of a stable `PATH` entry over a Homebrew `Cellar` path, which is tested
-  with injected paths and has not been run on a Mac.
+- **What has been checked on real hardware.** The render, including the pace marker glyph that
+  ships in 1.0.0, is confirmed on a real Mac and on Windows, including a live Claude Code session on
+  Windows (see `DECISIONS.md` D39 and D47). Linux was verified on Ubuntu under WSL on an earlier
+  release: the fixture suite, the install and uninstall flow, the shebang, UTF-8 glyph output, color
+  behavior, and the absolute Node path written for a Node that was not on the default `PATH`
+  (D36). Node 24 on Linux is covered by CI. Not confirmed: the environment variables a real Claude
+  Code process supplies on Linux (that check was a controlled invocation, not a live session),
+  terminals and fonts beyond the ones tried, and the macOS install and uninstall flow, which has not
+  been confirmed separately. The installer's choice of a stable `PATH` entry over a Homebrew
+  `Cellar` path is tested with injected paths only and has not been run on a Mac.
 - **Some file reads have no time limit.** Only the `git status` call has a timeout. Reading the
   cache and the todo files is not time-limited, so a `~/.claude` on a slow network mount can slow a
   render down.
@@ -444,19 +447,21 @@ change to any of the following waits for a major release:
 - **The stdin fields it reads.** For the statusline: `session_id`, `cwd`, `workspace.current_dir`,
   `workspace.repo.name`, `model.id`, `model.display_name`, `effort.level`,
   `context_window.used_percentage`, `rate_limits.five_hour` and `rate_limits.seven_day`
-  (`used_percentage`, `resets_at`), `cost.total_cost_usd`, `cost.total_lines_added`,
+  (`used_percentage`, and `resets_at` in epoch seconds; other forms accepted today are
+  tolerance, not a promise), `cost.total_cost_usd`, `cost.total_lines_added`,
   `cost.total_lines_removed`, and `pr.number`, `pr.url`, `pr.review_state`, `pr.kind`. For
   `--subagent`: `columns` and, per entry in `tasks`, `id`, `label`, `description`, `name`,
   `agentType`, `status`, `model`, `effort` and `tokenCount`. Fields Claude Code adds later are
   ignored.
 - **The render path always exits 0.** A segment that cannot render is left out. (The installer is
-  different by design: it exits 1 when it cannot safely change `settings.json`.)
+  different by design: it exits 1 when it cannot complete the install safely.)
 - **The subagent output shape:** one `{"id","content"}` JSON line per row.
 
 The rules this README states are part of the behavior: bold only at the `max` effort, usage bars
 bold from 85%, and pace (the marker and `paceColors`) never adding bold or `⚠`. What may change in
 a minor release is how things look: the exact glyphs, hex colors, spacing and segment labels, and
-the tuning of pace coloring and the pace marker (its 10% dead zone, its cap and its projection).
+the tuning of pace coloring (its 10% dead zone, its cap at 84 and its projection, D46) and the
+marker's placement.
 
 Not part of the promise: the `task` segment reads Claude Code's local todo files, whose location
 is an undocumented convention, so it is best-effort. Everything under `lib/` is internal. The

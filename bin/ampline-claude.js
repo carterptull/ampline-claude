@@ -7,7 +7,7 @@ const { renderSubagentLine } = require('../lib/segments/subagents');
 // Only guards a stdin stream that never closes; a local pipe delivers in ~1ms.
 const STDIN_TIMEOUT_MS = 500;
 const EXIT_BACKSTOP_MS = 200;
-// A real payload is a few KB. Past 8M characters (UTF-16 units of the decoded input, so about 8 MB
+// A real payload is a few KB. Past 8 Mi (8,388,608) characters (UTF-16 units of the decoded input, so about 8 MB
 // for ASCII) the stream is dropped unread and nothing is rendered (a truncated payload cannot
 // parse anyway); the process still exits 0.
 const MAX_STDIN_CHARS = 8 * 1024 * 1024;

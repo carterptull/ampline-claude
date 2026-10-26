@@ -18,7 +18,7 @@ sequenceDiagram
 
     CC->>B: spawn with JSON payload piped to stdin
     Note over B: argv is checked first<br/>--help, --version, --install, uninstall go elsewhere<br/>a TTY on stdin runs the installer
-    B->>B: collect stdin chunks until end, error, the 500ms timer<br/>or 8 million characters (then nothing is rendered)
+    B->>B: collect stdin chunks until end, error, the 500ms timer<br/>or 8 Mi characters, 8,388,608 (then nothing is rendered)
     B->>B: JSON.parse, null on bad or empty input
     B->>R: renderStatusline(data)
     R->>CF: loadConfig(workspace.current_dir, else cwd)
