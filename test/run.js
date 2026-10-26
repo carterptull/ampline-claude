@@ -1625,6 +1625,16 @@ function runConfigHardeningTests() {
       check('safeRead honors a custom limit', readSmallTextFile(f('c', 'abcd'), 3) === null && readSmallTextFile(f('c2', 'abc'), 3) === 'abc', 'custom limit');
       check('safeRead returns null for a directory', readSmallTextFile(dir) === null, 'expected null');
       check('safeRead returns null for a missing path', readSmallTextFile(path.join(dir, 'nope')) === null, 'expected null');
+      // The open itself must not block on a FIFO swapped in after the stat check.
+      const realOpen = fs.openSync;
+      const flagsSeen = [];
+      try {
+        fs.openSync = (p, flags, ...rest) => { flagsSeen.push(flags); return realOpen.call(fs, p, flags, ...rest); };
+        readSmallTextFile(f('nb', 'x'));
+      } finally { fs.openSync = realOpen; }
+      const nb = fs.constants.O_NONBLOCK || 0;
+      check('safeRead opens read-only and non-blocking (where the platform has O_NONBLOCK)',
+        flagsSeen.length === 1 && flagsSeen[0] === (fs.constants.O_RDONLY | nb) && (nb === 0 || (flagsSeen[0] & nb) === nb), JSON.stringify(flagsSeen));
     } finally {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     }
@@ -1658,7 +1668,7 @@ function runConfigHardeningTests() {
     return { res, ms, out: res.stdout || '' };
   };
 
-  // Thousands of copies of "git" used to run the segment once each (the audit killed 20,000 at
+  // Thousands of copies of "git" used to run the segment once each (the pre-1.0 review killed 20,000 at
   // 60 s). The binary run uses the largest list that fits under the 64 KB config cap (9,000
   // entries, about 54 KB; the 20,000 case is asserted above through validateAndMerge). The
   // config ends in "model" and leaves out "dir": a config skipped for size would render the
@@ -2065,7 +2075,8 @@ function runGitTrustTests() {
 
   // Git only accepts a .git directory that passes its own is_git_directory check (HEAD, objects/,
   // refs/); otherwise it silently keeps walking up to a repository ampline never scanned. ampline
-  // mirrors that check, and git cannot leave the scanned work tree (GIT_CEILING_DIRECTORIES).
+  // mirrors that check, and starts git at the real path of the work tree with its parent as the
+  // ceiling, so a rejected entry makes git fail rather than climb (a limit, not a sandbox).
   const innerLayout = (full) => (home, proj) => {
     fs.appendFileSync(path.join(proj, '.git', 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
     const inner = path.join(proj, 'inner');
@@ -2081,6 +2092,84 @@ function runGitTrustTests() {
   const innerBad = scenario(innerLayout(false));
   check('a .git directory git would reject (only a HEAD file) inside an outer repository: branch from HEAD, no marker, no cache entry',
     innerBad.setupOk && innerBad.out.includes('⎇ inner') && !hasMarker(innerBad.out) && innerBad.cacheFiles.length === 0, JSON.stringify([innerBad.out, innerBad.cacheFiles]));
+  // Git reads HEAD as it is on disk: it skips no whitespace before "ref:" or an object id, and it
+  // needs objects/ and refs/ to be searchable. A trimmed or looser mirror of that would accept a
+  // .git directory git rejects, after which git can climb into a repository ampline never scanned.
+  const spaced = (kind) => (home, proj) => {
+    const inner = path.join(proj, 'inner');
+    fs.mkdirSync(path.join(inner, '.git', 'objects'), { recursive: true });
+    fs.mkdirSync(path.join(inner, '.git', 'refs'));
+    fs.writeFileSync(path.join(inner, '.git', 'HEAD'), ' ref: refs/heads/spaced\n', 'utf8');
+    if (kind === 'junction') {
+      // A work tree reached through a link: git's own idea of its directory is the real path.
+      const link = path.join(home, 'link');
+      fs.symlinkSync(inner, link, 'junction');
+      return { cwd: link };
+    }
+    return { cwd: inner };
+  };
+  for (const [label, kind] of [['directly', 'plain'], ['through a symlink or junction', 'junction']]) {
+    const r = scenario(spaced(kind));
+    check('a .git directory whose HEAD starts with a space (git rejects it), reached ' + label + ': branch from HEAD, no marker from the outer repository, no cache entry',
+      r.setupOk && r.out.includes('⎇ spaced') && !hasMarker(r.out) && r.cacheFiles.length === 0, JSON.stringify([r.out, r.cacheFiles]));
+  }
+  if (typeof git.gitStartDir === 'function') {
+    // The same layout with the real git: started where gitStartDir says, with the ceiling that
+    // buildStatusEnv sets, git must fail (128) instead of reporting the outer repository. Started
+    // at the logical (linked) path with the logical parent as ceiling, as before, it escapes: the control.
+    const probeHome = makeTempHome();
+    try {
+      const outer = path.join(probeHome, 'outer');
+      fs.mkdirSync(outer);
+      const inner = path.join(outer, 'inner');
+      fs.mkdirSync(path.join(inner, '.git', 'objects'), { recursive: true });
+      fs.mkdirSync(path.join(inner, '.git', 'refs'));
+      fs.writeFileSync(path.join(inner, '.git', 'HEAD'), ' ref: refs/heads/spaced\n', 'utf8');
+      const link = path.join(probeHome, 'link');
+      fs.symlinkSync(inner, link, 'junction');
+      const initOk = runGit(probeHome, outer, ['init', '-q']).status === 0;
+      const gitIn = (cwd, ceiling) => spawnSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd, env: { ...gitEnv(probeHome), GIT_CEILING_DIRECTORIES: ceiling }, encoding: 'utf8', timeout: 20000,
+      });
+      const control = gitIn(link, path.dirname(link));
+      check('control: from a linked work tree, a ceiling built from the logical path does not stop git leaving it',
+        initOk && control.status === 0, JSON.stringify([control.status, control.stdout, control.stderr]));
+      const start = git.gitStartDir(link);
+      check('gitStartDir resolves a linked work tree to its real path', start === fs.realpathSync.native(inner), JSON.stringify(start));
+      const env = git.buildStatusEnv({}, start);
+      const held = gitIn(start, env.GIT_CEILING_DIRECTORIES);
+      check('started at the real path with its parent as ceiling, git fails (128) instead of escaping to the outer repository',
+        held.status === 128 && !String(held.stdout).trim(), JSON.stringify([held.status, held.stdout, held.stderr]));
+    } finally {
+      try { fs.rmSync(probeHome, { recursive: true, force: true }); } catch {}
+    }
+    const asked = [];
+    const seam = (answer) => (p) => { asked.push(p); if (answer instanceof Error) throw answer; return answer; };
+    const realWt = path.join(os.tmpdir(), 'wt-parent', 'real');
+    check('gitStartDir returns what realpath returns for the work tree',
+      git.gitStartDir(path.join(os.tmpdir(), 'x'), seam(realWt)) === realWt && asked[0] === path.join(os.tmpdir(), 'x'), JSON.stringify(asked));
+    check('gitStartDir is null (the call is skipped) when realpath fails or returns nothing usable',
+      git.gitStartDir('/x', seam(new Error('ENOENT'))) === null && git.gitStartDir('/x', seam('')) === null
+        && git.gitStartDir('/x', seam(undefined)) === null && git.gitStartDir('/x', seam('relative/dir')) === null, 'expected null');
+    check('gitStartDir is null when the work tree\'s parent contains the list separator (it would split into two ceilings)',
+      git.gitStartDir('/x', seam(path.join(os.tmpdir(), 'a' + path.delimiter + 'b', 'wt'))) === null, 'expected null');
+  }
+  if (process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0) {
+    // access(X_OK): git rejects a git dir whose objects/ or refs/ it cannot search.
+    const noexec = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-noexec-'));
+    try {
+      for (const d of ['objects', 'refs']) fs.mkdirSync(path.join(noexec, '.git', d), { recursive: true });
+      fs.writeFileSync(path.join(noexec, '.git', 'HEAD'), 'ref: refs/heads/x\n', 'utf8');
+      const before = git.resolveRepo(noexec);
+      fs.chmodSync(path.join(noexec, '.git', 'objects'), 0o600);
+      const after = git.resolveRepo(noexec);
+      fs.chmodSync(path.join(noexec, '.git', 'objects'), 0o700);
+      check('an objects directory git cannot search (no execute bit) makes the repository not pinnable',
+        !!before && before.pinnable === true && !!after && after.pinnable === false, JSON.stringify([before, after]));
+    } finally {
+      try { fs.rmSync(noexec, { recursive: true, force: true }); } catch {}
+    }
+  }
   if (typeof git.resolveRepo === 'function') {
     const incomplete = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-incomplete-'));
     try {
@@ -2092,6 +2181,18 @@ function runGitTrustTests() {
       fs.mkdirSync(path.join(incomplete, '.git', 'refs'));
       const ok = git.resolveRepo(incomplete);
       check('resolveRepo accepts a .git directory with HEAD, objects and refs', !!ok && ok.pinnable === true, JSON.stringify(ok));
+      // HEAD is judged as it is on disk, with no trimming: git skips no leading whitespace.
+      const A40 = 'a'.repeat(40);
+      const headCases = [
+        [' ref: refs/heads/x\n', false], ['\nref: refs/heads/x\n', false], ['ref: refs/heads/x', true], ['ref:refs/heads/x\n', true],
+        ['ref: heads/x\n', false], [' ' + A40 + '\n', false], [A40 + '\n', true], ['a'.repeat(64) + '\n', true], ['a'.repeat(39) + '\n', false],
+      ];
+      const headResults = headCases.map(([text]) => {
+        fs.writeFileSync(path.join(incomplete, '.git', 'HEAD'), text, 'utf8');
+        return git.resolveRepo(incomplete).pinnable;
+      });
+      check('HEAD is judged untrimmed: leading whitespace is not pinnable, the exact forms git accepts are',
+        headCases.every(([, want], i) => headResults[i] === want), JSON.stringify(headCases.map(([t], i) => [t, headResults[i]])));
     } finally {
       try { fs.rmSync(incomplete, { recursive: true, force: true }); } catch {}
     }
