@@ -78,15 +78,22 @@ lib/
     context.js               Context-window usage bar.
     rateLimits.js             5-hour + weekly usage bars, with the pace marker and opt-in paceColors.
     git.js                     Branch (from .git/HEAD, no subprocess) + ahead/behind/dirty
-                               (one cached `git status --porcelain=v2` call, run with
-                               `-c core.fsmonitor=` and `--no-optional-locks`). fsmonitor is
-                               overridden; if the repo's OWN config (config, config.worktree,
-                               and a linked worktree's common dir via `commondir`) defines a
-                               `[filter ...]`, `[include]` or `[includeIf ...]` section, or cannot
-                               be read and parsed, the call is skipped (branch only, no marker,
-                               no `git:` cache entry; D20 follow-up). Everything else in the
-                               repo's own config is trusted exactly as when you run git yourself
-                               there; global and system config are never scanned.
+                               (one cached `git status --porcelain=v2` call from
+                               `buildStatusArgs`: fsmonitor overridden, `--no-optional-locks`
+                               (a real defense: no index write, so no post-index-change hook),
+                               `--ignore-submodules=dirty` (a dirty submodule work tree does not
+                               set the marker), `safe.bareRepository=explicit`, and `--git-dir` /
+                               `--work-tree` pinned to the repository that was scanned). If the
+                               repo's OWN config (config, config.worktree, and a linked
+                               worktree's common dir via `commondir`, parsed exactly like git)
+                               defines a `[filter ...]`, `[include]` or `[includeIf ...]`
+                               section, or cannot be read and parsed, or a `.git` file or
+                               `commondir` has odd whitespace, or a bare-looking directory sits
+                               between the cwd and the repo, the call is skipped (branch only, no
+                               marker, no `git:` cache entry; D20 follow-up). Everything else in
+                               the repo's own config is trusted exactly as when you run git
+                               yourself there; global and system config are never scanned. This
+                               narrows what a repository can make git do; it is not a sandbox.
     cost.js                     Session cost + lines added/removed.
     task.js                      Current in-progress todo, from ~/.claude/todos/.
     pr.js                          Open PR (`#N`) or GitLab MR (`!N`, when `pr.kind === 'mr'`) +

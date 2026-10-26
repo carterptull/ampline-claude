@@ -379,34 +379,59 @@ every 30s (`refreshInterval`) and could contend with a concurrent interactive gi
 found that this entry, and the CHANGELOG line and diagram text that repeat it, claimed more than
 `-c core.fsmonitor=` delivers. That flag closes one mechanism. `git status` also runs content
 filter drivers that a repository's own config defines and that `.gitattributes` selects, and it
-honors `include` and `includeIf` files named in that config. The precondition is unchanged
-(the repo's `.git/config` came from someone else, for example an extracted archive), and Claude
-Code itself runs git in the workspace, so the added exposure is that ampline repeats the call on
-every render. The original text above stands as the record of what was believed then.
+honors `include` and `includeIf` files named in that config. The precondition is a repository
+directory that arrives with its own config: an extracted archive, or an embedded bare directory
+inside a clone. Claude Code itself runs git in the workspace, so the added exposure is that
+ampline repeats the call on every render. The original text above stands as the record of what
+was believed then.
 
 **Decision:** before the subprocess, `git.js` scans the repo-local config files: `<gitdir>/config`
 and `<gitdir>/config.worktree`, plus, for a linked worktree, the same two files in the common
-directory found through the `commondir` file. If any of them defines a `[filter ...]` section (any
-key), an `[include]` or an `[includeIf ...]` section, or cannot be read or parsed (not a small
-regular file, over 256 KB, malformed header), ampline does not run `git status` in that repo. The
-branch still renders from `HEAD`; the ahead/behind/dirty marker is left out and no `git:` cache
-entry is written. The scan runs before the cache is read, so an untrusted repo never serves a
-result either.
+directory found through the `commondir` file. If any of them defines a `[filter ...]` section
+(any key), an `[include]` or an `[includeIf ...]` section, or cannot be read or parsed (not a
+small regular file, over 256 KB, malformed header), ampline does not run `git status` in that
+repo. The branch still renders from `HEAD`; the ahead/behind/dirty marker is left out and no
+`git:` cache entry is written. The scan runs before the cache is read, so an untrusted repo never
+serves a result either. As a belt-and-braces rule, any `[` followed by `filter` or `include`
+anywhere in the text (a comment or a value included) also counts as untrusted; those false
+positives are accepted.
+
+A second finding from review: the scanner read the files ampline THOUGHT git would read, not the
+files git reads. Three divergences existed (an embedded bare directory at the cwd that git treats
+as the repository while ampline walked up to an outer one; a `commondir` value git reads
+literally, minus one trailing newline, while ampline trimmed it; and a `.git` file whose
+`gitdir:` value git also reads literally while ampline's pattern skipped extra spaces). So the
+call is now pinned: `--git-dir=<scanned git dir>` and `--work-tree=<directory holding the .git
+entry>` bypass git's discovery and gitfile parsing, `-c safe.bareRepository=explicit` is added,
+`commondir` and the gitfile are parsed exactly like git (one trailing newline dropped, no trim),
+and a value with leading or trailing whitespace, a carriage return, an embedded newline or no
+characters is untrusted (the call is skipped). A bare-looking directory between the cwd and the
+repository also skips the call.
+
+Two more narrowings: `--ignore-submodules=dirty` (submodules have their own config, which is
+not scanned, so `git status` must not recurse into them; trade-off: a submodule whose work tree
+is dirty no longer sets the dirty marker, while a moved submodule commit still counts) and the
+reclassification of `--no-optional-locks` as a real defense, not a courtesy: without it
+`git status` refreshes and writes the index, and a repository-local post-index-change hook can
+run.
 
 What this does and does not block, stated precisely:
-- Blocked: fsmonitor (overridden on the command line), and, by skipping the call, repo-local filter
-  drivers and includes.
-- Not blocked: everything else in a repository's own config is trusted exactly as when you run git
-  yourself in that repository. As with any tool that runs `git status` there, a repository's own
-  configuration is trusted unless ampline detects a filter or include in it.
+- Blocked: fsmonitor (overridden on the command line); optional index writes; submodule
+  recursion; git picking a different repository than the one scanned; and, by skipping the
+  call, repo-local filter drivers and includes.
+- Not blocked: everything else in a repository's own config is trusted exactly as when you run
+  git yourself in that repository. As with any tool that runs `git status` there, a
+  repository's own configuration is trusted unless ampline detects a filter or include in it.
+  This narrows what a repository can make git do on every render; it is not a sandbox.
 - Not scanned on purpose: global and system config (a user's own LFS filter, for example, keeps
   working because it is not repo-local).
 
 **Alternatives considered:** requiring the repo directory to be owned by the current user (cheap
 but platform-specific and does not cover a user who unpacked the archive themselves); dropping
 ahead/behind/dirty or making it opt-in (loses a feature for everyone to guard a narrow case);
-asking git to parse the config (`git config`) would add a second subprocess to every render. The scanner is a conservative header check, not a full config parser, and errs toward
-skipping the call.
+asking git to parse the config (`git config`) would add a second subprocess to every render. The
+scanner is a conservative header check, not a full config parser, and errs toward skipping the
+call.
 
 ### D21. Surrogate-pair-unsafe truncation fixed in three segments
 

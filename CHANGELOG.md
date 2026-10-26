@@ -67,15 +67,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - **`git status` is no longer run in a repository whose own config defines a filter or an include.**
   `git status` also honors content filter drivers and `include`/`includeIf` files named in a
-  repository's own config, which `-c core.fsmonitor=` does not cover; a repository that arrived as
-  an archive (a clone does not transfer `.git/config`) could use them to run a command on every
-  render. Before spawning `git status`, ampline now reads the repo-local config (`config`,
-  `config.worktree`, and for a linked worktree the common directory's, found through
+  repository's own config, which `-c core.fsmonitor=` does not cover. The precondition is a
+  repository directory that arrives with its own config: an extracted archive, or an embedded bare
+  directory inside a clone. Before spawning `git status`, ampline now reads the repo-local config
+  (`config`, `config.worktree`, and for a linked worktree the common directory's, found through
   `commondir`). If it defines a `[filter ...]`, `[include]` or `[includeIf ...]` section, or cannot
   be read and parsed, the call is skipped: the branch still shows from `HEAD`, with no
   ahead/behind/dirty marker and no cache entry. Global and system config are not scanned, and
   everything else in a repository's own config is trusted exactly as when you run git yourself
   there. See `DECISIONS.md` D20 (follow-up).
+- **The `git status` call is pinned to the repository that was scanned.** It now passes
+  `--git-dir` and `--work-tree` (so git's own repository discovery and `.git`-file parsing cannot
+  land somewhere ampline never looked), `-c safe.bareRepository=explicit`, and
+  `--ignore-submodules=dirty` (submodules have their own config, which is not scanned).
+  `commondir` and `.git` files are read exactly as git reads them, and any value with extra
+  whitespace, a carriage return or an embedded newline skips the call. A bare-looking directory
+  between the working directory and the repository also skips it.
+  Trade-off: a submodule whose work tree is dirty no longer sets the dirty marker; a moved
+  submodule commit still does.
 - **Correction to the 0.3.0 entry below.** It said the `core.fsmonitor` override stopped a
   repository's `.git/config` from running a command on every render. That was too broad:
   the override closes only the fsmonitor path. Filters and includes were not covered until this
