@@ -60,5 +60,11 @@ check(
   JSON.stringify(entryRaw.slice(0, 22))
 );
 
+// The same check for every packed file under lib/: .gitattributes keeps LF endings in this
+// checkout only, and a CR in a packed source file is just as invisible in the file list.
+const libFiles = files.filter((f) => f.startsWith('lib/') && f.endsWith('.js'));
+const libWithCr = libFiles.filter((f) => fs.readFileSync(path.join(ROOT, f), 'utf8').includes('\r'));
+check(`lib/ has no CR byte (${libFiles.length} files checked)`, libFiles.length > 0 && libWithCr.length === 0, libWithCr.join(','));
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nTarball contents look right.');
 process.exit(failures ? 1 : 0);
