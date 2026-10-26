@@ -1820,10 +1820,21 @@ function runGitTrustTests() {
       const result = setup(home, proj);
       if (result === false) setupOk = false;
       const cwd = (result && result.cwd) || proj;
-      // Rendered twice, outputs joined: the first `git status` can be slow on a cold machine and a
-      // timeout writes no cache, so a marker on either render counts. A skipped repo must show no
-      // marker on either.
+      // Rendered twice, outputs joined: the first `git status` can be slow on a cold machine and
+      // time out. A timeout leaves a failure marker ({ failed: true }) that the next render would
+      // honor for 30 s, so any failure marker is deleted between the two renders: the second
+      // render really runs git again, and a marker on either render counts. A skipped repository
+      // must show no marker on either. (A good status entry is left alone.)
+      const dropFailureMarkers = () => {
+        const dir = path.join(home, '.claude', 'cache', 'ampline');
+        let names = [];
+        try { names = fs.readdirSync(dir).filter((f) => f.startsWith('git_')); } catch {}
+        for (const f of names) {
+          try { if (JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).failed === true) fs.rmSync(path.join(dir, f), { force: true }); } catch {}
+        }
+      };
       for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt === 1) dropFailureMarkers();
         const res = spawnSync(process.execPath, [BIN], {
           input: JSON.stringify(inlinePayload({ cwd })), encoding: 'utf8', timeout: 20000, cwd: home, env: { ...gitEnv(home), ...extraEnv },
         });
@@ -2253,12 +2264,13 @@ function runRobustnessTests() {
   for (const [n, want] of [
     [1, '1'], [999, '999'], [1000, '1k'], [1049, '1k'], [1050, '1.1k'], [14046, '14k'], [999949, '999.9k'],
     [999950, '1M'], [999999, '1M'], [1000000, '1M'], [1049999, '1M'], [1050000, '1.1M'], [123456789, '123.5M'],
+    [999949999, '999.9M'], [999950000, '1G'], [999999999, '1G'], [1000000000, '1G'], [1500000000, '1.5G'], [12345678901, '12.3G'],
   ]) check('a token count of ' + n + ' shows ' + want, tokensOf(n) === want, JSON.stringify(tokensOf(n)));
   for (const [label, n] of [
     ['zero', 0], ['negative', -5], ['a fraction', 0.5], ['a tiny fraction', 1e-7], ['1.5', 1.5], ['NaN', NaN], ['Infinity', Infinity],
     ['an unsafe integer', 2 ** 60], ['1e27', 1e27], ['a string', '5000'], ['true', true], ['null', null], ['an object', {}],
   ]) check('a token count of ' + label + ' is left out', row({ tokenCount: n }) === '↳ worker', JSON.stringify(row({ tokenCount: n })));
-  check('the largest safe integer prints without exponent notation', /^\d+(\.\d)?M$/.test(tokensOf(Number.MAX_SAFE_INTEGER)), tokensOf(Number.MAX_SAFE_INTEGER));
+  check('the largest safe integer prints without exponent notation', /^\d+(\.\d)?G$/.test(tokensOf(Number.MAX_SAFE_INTEGER)), tokensOf(Number.MAX_SAFE_INTEGER));
 
   // The name budget is 24 characters without a usable width, 32 for a wide one (31 letters and an ellipsis).
   const longLabel = 'w'.repeat(60);
