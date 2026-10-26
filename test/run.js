@@ -1473,6 +1473,203 @@ function runSourceHygieneTests() {
   else fail('source hygiene: invisible or bidirectional characters found', hits.slice(0, 12).join(', '));
 }
 
+// A repo-local .amplinerc.json loads automatically from any checkout, so every value in it is
+// attacker-shaped input: bounded in length, count and size, and read only if it is a small
+// regular file. The git reads (.git file, HEAD) follow the same rule.
+function runConfigHardeningTests() {
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    config hardening: ' + name);
+    else fail('config hardening: ' + name, detail);
+  };
+  const { validateAndMerge, DEFAULT_CONFIG } = require('../lib/config');
+  const plain = (o) => String(o).replace(/\x1b\[[0-9;]*m/g, '');
+  const cps = (s) => Array.from(s).length;
+
+  // segments: each name at most once (first occurrence wins), so at most nine entries.
+  const dup = validateAndMerge({ segments: ['git', 'dir', 'git', 'bogus', 'dir', 'model', 'git'] }).segments;
+  check('duplicate segments keep the first occurrence', JSON.stringify(dup) === JSON.stringify(['git', 'dir', 'model']), JSON.stringify(dup));
+  const big = validateAndMerge({ segments: new Array(20000).fill('git') }).segments;
+  check('20,000 duplicate segments collapse to one', big.length === 1 && big[0] === 'git', String(big.length));
+  const all = validateAndMerge({ segments: DEFAULT_CONFIG.segments.concat(DEFAULT_CONFIG.segments) }).segments;
+  check('at most nine segments', all.length === 9, String(all.length));
+  check('only unknown names still means the default',
+    JSON.stringify(validateAndMerge({ segments: ['x', 'y'] }).segments) === JSON.stringify(DEFAULT_CONFIG.segments), 'expected default');
+  check('an empty list still means the default',
+    JSON.stringify(validateAndMerge({ segments: [] }).segments) === JSON.stringify(DEFAULT_CONFIG.segments), 'expected default');
+
+  // separator: 16 code points at most, counted after sanitizing, never splitting an emoji.
+  const sep = (s) => validateAndMerge({ separator: s }).separator;
+  check('a 16-code-point separator is kept whole', sep('x'.repeat(16)) === 'x'.repeat(16), sep('x'.repeat(16)));
+  check('a 17-code-point separator is cut to 16', sep('x'.repeat(17)) === 'x'.repeat(16), sep('x'.repeat(17)));
+  const rocket = String.fromCodePoint(0x1f680);
+  const emojiSep = sep(rocket.repeat(40));
+  check('emoji are counted by code point and never split', cps(emojiSep) === 16 && emojiSep === rocket.repeat(16), String(cps(emojiSep)));
+  const escSep = sep((ESC + '[31m').repeat(10) + 'ab');
+  check('control characters are removed before the cap counts', escSep === '[31m'.repeat(4), JSON.stringify(escSep));
+  check('a multi-megabyte separator is bounded', cps(sep('~'.repeat(5 * 1024 * 1024))) === 16, 'expected 16 code points');
+
+  // maxBranchLength / maxTaskLength: finite, floored, clamped to 5..200; below 5 or non-finite means the default.
+  for (const key of ['maxBranchLength', 'maxTaskLength']) {
+    const v = (x) => validateAndMerge({ [key]: x })[key];
+    check(key + ' keeps an in-range integer', v(30) === 30, String(v(30)));
+    check(key + ' floors a fraction', v(7.5) === 7, String(v(7.5)));
+    check(key + ' accepts the 5 floor', v(5) === 5 && v(5.9) === 5, String(v(5.9)));
+    check(key + ' accepts the 200 ceiling', v(200) === 200, String(v(200)));
+    check(key + ' clamps a huge value to 200', v(1e9) === 200 && v(201) === 200, String(v(1e9)));
+    check(key + ' below 5 means the default',
+      [4, 4.99, -1, 0].every((x) => v(x) === DEFAULT_CONFIG[key]), String(v(4.99)));
+    check(key + ' non-finite or non-number means the default',
+      [Infinity, -Infinity, NaN, '50', null, true, {}, []].every((x) => v(x) === DEFAULT_CONFIG[key]), 'expected default');
+  }
+
+  // Through the real binary, with the config planted where a cloned repo would put it.
+  const repoHead = (dir) => {
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+  };
+  // `config` is written as the project's .amplinerc.json (a string is written verbatim);
+  // `seed(home, proj)` adds anything else; `input(home)` overrides the stdin payload.
+  const runIn = (config, { seed, input } = {}) => {
+    const home = makeTempHome();
+    const proj = path.join(home, 'proj');
+    fs.mkdirSync(proj, { recursive: true });
+    repoHead(proj);
+    if (config !== undefined) {
+      fs.writeFileSync(path.join(proj, '.amplinerc.json'), typeof config === 'string' ? config : JSON.stringify(config), 'utf8');
+    }
+    if (seed) seed(home, proj);
+    const base = { ...process.env };
+    delete base.NO_COLOR;
+    delete base.FORCE_COLOR;
+    const t0 = Date.now();
+    const res = spawnSync(process.execPath, [BIN], {
+      input: input ? input(home) : JSON.stringify(inlinePayload({ cwd: path.join(home, 'proj') })),
+      encoding: 'utf8', timeout: 20000, cwd: home,
+      env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200' },
+    });
+    const ms = Date.now() - t0;
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    return { res, ms, out: res.stdout || '' };
+  };
+
+  // 20,000 copies of "git" used to run the segment 20,000 times (the audit killed it at 60 s).
+  const dupRun = runIn({ segments: new Array(20000).fill('git') });
+  const branches = (plain(dupRun.out).match(/⎇/g) || []).length;
+  check('20,000 duplicate git segments exit 0, quickly, and render once',
+    dupRun.res.status === 0 && dupRun.ms < 8000 && branches === 1,
+    `status ${dupRun.res.status}, ${dupRun.ms} ms, ${branches} branches, error ${dupRun.res.error && dupRun.res.error.message}`);
+
+  // A huge separator used to be printed whole. (A 5 MB one is covered above through validateAndMerge;
+  // a config file that large is now skipped outright, so the binary gets the largest that still loads.)
+  const sepRun = runIn({ segments: ['model', 'context'], separator: '~'.repeat(60 * 1024) });
+  const longest = Math.max(0, ...(plain(sepRun.out).match(/~+/g) || []).map((m) => m.length));
+  check('a 60 KB separator prints at most 16 code points of it',
+    sepRun.res.status === 0 && longest > 0 && longest <= 16 && sepRun.out.length < 2000,
+    `status ${sepRun.res.status}, run of ${longest}, ${sepRun.out.length} chars`);
+
+  // maxTaskLength 1e9 used to print a 1 MB todo whole.
+  const todoSeed = (home) => {
+    const dir = path.join(home, '.claude', 'todos');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'cfg-hardening-agent-cfg-hardening.json'),
+      JSON.stringify([{ status: 'in_progress', content: 'x'.repeat(1024 * 1024) }]), 'utf8');
+  };
+  const taskRun = runIn({ segments: ['task'], maxTaskLength: 1e9 }, {
+    seed: todoSeed,
+    input: (home) => JSON.stringify(inlinePayload({ session_id: 'cfg-hardening', cwd: path.join(home, 'proj') })),
+  });
+  const xs = Math.max(0, ...(plain(taskRun.out).match(/x+/g) || []).map((m) => m.length));
+  check('maxTaskLength 1e9 prints at most 200 characters of a 1 MB todo',
+    taskRun.res.status === 0 && xs > 0 && xs <= 200 && plain(taskRun.out).includes('…'), `status ${taskRun.res.status}, run of ${xs}`);
+
+  // The config file itself: a directory, or anything over 64 KB, is skipped like a missing file
+  // and the walk continues to the next candidate (here the one in the home directory).
+  const homeCfg = (home) => fs.writeFileSync(path.join(home, '.amplinerc.json'), JSON.stringify({ separator: ' @@ ' }), 'utf8');
+  const onlyHome = runIn(undefined, { seed: homeCfg });
+  check('control: the home config applies when the project has none', plain(onlyHome.out).includes('@@'), JSON.stringify(plain(onlyHome.out)));
+
+  const dirRun = runIn(undefined, {
+    seed: (home, proj) => { homeCfg(home); fs.mkdirSync(path.join(proj, '.amplinerc.json')); },
+  });
+  check('a config path that is a directory is skipped and the walk continues',
+    dirRun.res.status === 0 && plain(dirRun.out).includes('@@'), JSON.stringify(plain(dirRun.out)));
+
+  // A valid JSON object of exactly `bytes` bytes whose separator is ' !! '.
+  const padded = (bytes) => {
+    const head = '{"separator":" !! ","pad":"';
+    return head + 'p'.repeat(bytes - Buffer.byteLength(head) - 2) + '"}';
+  };
+  const mb = padded(1024 * 1024);
+  check('fixture is exactly 1 MB', Buffer.byteLength(mb) === 1024 * 1024, String(Buffer.byteLength(mb)));
+  const bigRun = runIn(mb, { seed: homeCfg });
+  check('a 1 MB config is skipped and the walk continues',
+    bigRun.res.status === 0 && plain(bigRun.out).includes('@@') && !plain(bigRun.out).includes('!!'), JSON.stringify(plain(bigRun.out)));
+
+  const atLimit = padded(64 * 1024);
+  check('boundary fixture is exactly 64 KB', Buffer.byteLength(atLimit) === 64 * 1024, String(Buffer.byteLength(atLimit)));
+  const limitRun = runIn(atLimit, { seed: homeCfg });
+  check('a config of exactly 64 KB is still read',
+    limitRun.res.status === 0 && plain(limitRun.out).includes('!!'), JSON.stringify(plain(limitRun.out)));
+  const overRun = runIn(padded(64 * 1024 + 1), { seed: homeCfg });
+  check('a config one byte over 64 KB is skipped',
+    overRun.res.status === 0 && plain(overRun.out).includes('@@') && !plain(overRun.out).includes('!!'), JSON.stringify(plain(overRun.out)));
+
+  // The git reads: a .git file or HEAD that is a directory or oversized is treated as no branch,
+  // never read. (A directory stands in for a device or FIFO; none are created here.)
+  const gitRun = (setup) => {
+    const home = makeTempHome();
+    const proj = path.join(home, 'proj');
+    fs.mkdirSync(proj, { recursive: true });
+    setup(proj);
+    const base = { ...process.env };
+    delete base.NO_COLOR;
+    delete base.FORCE_COLOR;
+    const res = spawnSync(process.execPath, [BIN], {
+      input: JSON.stringify(inlinePayload({ cwd: proj })), encoding: 'utf8', timeout: 20000, cwd: home,
+      env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200' },
+    });
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    return { res, out: plain(res.stdout || '') };
+  };
+  const control = gitRun(repoHead);
+  check('control: a plain HEAD file shows the branch', control.out.includes('⎇ main'), JSON.stringify(control.out));
+  const headDir = gitRun((proj) => { fs.mkdirSync(path.join(proj, '.git', 'HEAD'), { recursive: true }); });
+  check('a HEAD that is a directory shows no branch and exits 0', headDir.res.status === 0 && !headDir.out.includes('⎇'), JSON.stringify(headDir.out));
+  const headBig = gitRun((proj) => {
+    fs.mkdirSync(path.join(proj, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.git', 'HEAD'), 'ref: refs/heads/main\n' + ' '.repeat(2 * 1024 * 1024), 'utf8');
+  });
+  check('an oversized HEAD file shows no branch and exits 0', headBig.res.status === 0 && !headBig.out.includes('⎇'), JSON.stringify(headBig.out));
+  const linkedGitdir = (proj, pad) => {
+    const real = path.join(proj, '..', 'real-gitdir');
+    fs.mkdirSync(real, { recursive: true });
+    fs.writeFileSync(path.join(real, 'HEAD'), 'ref: refs/heads/wt\n', 'utf8');
+    fs.writeFileSync(path.join(proj, '.git'), 'gitdir: ' + real + '\n' + pad, 'utf8');
+  };
+  const gitFileOk = gitRun((proj) => linkedGitdir(proj, ''));
+  check('control: a small gitdir file is followed', gitFileOk.out.includes('⎇ wt'), JSON.stringify(gitFileOk.out));
+  const gitFileBig = gitRun((proj) => linkedGitdir(proj, '#'.repeat(2 * 1024 * 1024)));
+  check('an oversized gitdir file is not read', gitFileBig.res.status === 0 && !gitFileBig.out.includes('⎇'), JSON.stringify(gitFileBig.out));
+
+  // stdin: capped at 8 MB. Past the cap the render prints nothing and still exits 0, with no
+  // "no input" hint and no partial output. Under the cap a large payload still renders.
+  const smallOk = runIn(undefined, { input: () => JSON.stringify(inlinePayload({ pad: 'p'.repeat(7 * 1024 * 1024) })) });
+  check('a 7 MB payload under the cap still renders',
+    smallOk.res.status === 0 && plain(smallOk.out).includes('Haiku'), `status ${smallOk.res.status}, ${smallOk.out.length} chars`);
+  const overCap = runIn(undefined, { input: () => JSON.stringify(inlinePayload({})) + ' '.repeat(9 * 1024 * 1024) });
+  check('a payload over 8 MB renders nothing, exits 0 and prints no garbage',
+    overCap.res.status === 0 && overCap.out === '' && !/no input received/.test(overCap.res.stderr || ''),
+    `status ${overCap.res.status}, stdout ${JSON.stringify(overCap.out.slice(0, 80))}, stderr ${JSON.stringify((overCap.res.stderr || '').slice(0, 120))}`);
+  const subHome = makeTempHome();
+  const overCapSub = spawnSync(process.execPath, [BIN, '--subagent'], {
+    input: JSON.stringify({ columns: 80, tasks: [] }) + ' '.repeat(9 * 1024 * 1024), encoding: 'utf8', timeout: 20000, cwd: subHome,
+    env: { ...process.env, HOME: subHome, USERPROFILE: subHome },
+  });
+  try { fs.rmSync(subHome, { recursive: true, force: true }); } catch {}
+  check('--subagent over 8 MB prints nothing and exits 0',
+    overCapSub.status === 0 && overCapSub.stdout === '', `status ${overCapSub.status}, stdout ${JSON.stringify((overCapSub.stdout || '').slice(0, 80))}`);
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -1493,6 +1690,7 @@ function main() {
   runInjectionTests();
   runInjectionFollowupTests();
   runInvisibleCharacterTests();
+  runConfigHardeningTests();
   runSourceHygieneTests();
 
   // NO_COLOR must strip every escape sequence.

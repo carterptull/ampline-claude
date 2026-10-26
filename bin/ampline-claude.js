@@ -7,6 +7,9 @@ const { renderSubagentLine } = require('../lib/segments/subagents');
 // Only guards a stdin stream that never closes; a local pipe delivers in ~1ms.
 const STDIN_TIMEOUT_MS = 500;
 const EXIT_BACKSTOP_MS = 200;
+// A real payload is a few KB. Past this much input the stream is dropped unread and nothing is
+// rendered (a truncated payload cannot parse anyway); the process still exits 0.
+const MAX_STDIN_BYTES = 8 * 1024 * 1024;
 
 function parseInput(raw) {
   if (!raw) return null;
@@ -62,6 +65,7 @@ function main() {
   if (process.stdin.isTTY) return runInstaller();
 
   let raw = '';
+  let overflow = false;
   let done = false;
   let timer = null;
 
@@ -74,12 +78,13 @@ function main() {
     // Empty stdin with no --install/TTY means the installer path never ran
     // and nothing was piped either — most likely a scripted `npx ampline-claude`
     // with no flag. stderr only; never touches stdout or the exit path.
-    if (!raw && !isSubagent) {
+    if (!raw && !overflow && !isSubagent) {
       try { process.stderr.write('ampline-claude: no input received — if you meant to install, run `npx ampline-claude --install`\n'); } catch {}
     }
 
     let out = '';
     try {
+      if (overflow) throw new Error('stdin over cap');
       const data = parseInput(raw);
       out = isSubagent ? (renderSubagentLine(data) || '') : renderStatusline(data);
     } catch {
@@ -91,7 +96,15 @@ function main() {
   timer = setTimeout(finish, STDIN_TIMEOUT_MS);
 
   process.stdin.setEncoding('utf8');
-  process.stdin.on('data', (chunk) => { raw += chunk; });
+  process.stdin.on('data', (chunk) => {
+    if (overflow) return;
+    raw += chunk;
+    if (raw.length > MAX_STDIN_BYTES) {
+      overflow = true;
+      raw = '';
+      finish();
+    }
+  });
   process.stdin.on('end', finish);
   process.stdin.on('error', finish);
 }

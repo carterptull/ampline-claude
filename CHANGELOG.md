@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged; only the copyright holder named in `LICENSE` and the README footer differ.
 
 ### Fixed
+- **A config file can no longer stall or flood the render.** `segments` is deduplicated (nine at most), `separator` is capped at 16 characters, `maxBranchLength` and `maxTaskLength` are floored and clamped to 5..200, and `.amplinerc.json`, the `.git` file and `HEAD` are read only if they are regular files of at most 64 KB. Input on stdin is capped at 8 MB, past which nothing is rendered and the exit code stays 0.
 - **The subagent status line now uses Claude Code's documented output format.** `--subagent`
   printed bare text rows, but Claude Code expects one JSON line per row, `{"id","content"}`, and
   keeps its own default row for anything else, so the custom rows were most likely never shown.
