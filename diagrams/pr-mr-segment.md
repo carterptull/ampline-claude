@@ -111,4 +111,4 @@ segment sits in a render see [`render-sequence.md`](render-sequence.md), and for
 and trust boundary see [`deployment-security.md`](deployment-security.md).
 
 ---
-_Last updated: 2026-10-07 · reflects v0.6.0_
+_Last updated: 2026-10-26 · reflects v1.0.0_

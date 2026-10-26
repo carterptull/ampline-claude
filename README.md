@@ -7,8 +7,11 @@
 
 **Amplify your statusline.** ampline-claude is a color-graded, zero-dependency statusline for
 Claude Code, built by Paymon Software. Its signature feature is a continuous 20-step color
-wheel across the model and effort space. No other Claude Code statusline shows you what's
-running and how hard, in color, at a glance, on one line.
+wheel across the model and effort space, so the model and effort level you are running show up
+in color at a glance, next to context and rate-limit usage, git state and session cost. It
+wraps to a second line when your terminal is narrow.
+
+Website and live demo: https://ampline.js.org
 
 ![ampline-claude preview](https://github.com/carterptull/ampline-claude/raw/main/preview.png)
 
@@ -17,12 +20,14 @@ running and how hard, in color, at a glance, on one line.
 - [Quickstart](#quickstart)
 - [Update](#update)
 - [Uninstall](#uninstall)
+- [Commands](#commands)
 - [What it shows](#what-it-shows)
 - [The color wheel](#the-color-wheel)
 - [Configuration](#configuration)
 - [How it works](#how-it-works)
 - [FAQ](#faq)
 - [Known limitations](#known-limitations)
+- [Stability](#stability)
 
 ## Quickstart
 
@@ -99,8 +104,22 @@ though: installing over an existing foreign `statusLine` or `subagentStatusLine`
 and then replaces it, after backing the file up. Backups are named
 `settings.json.backup.<timestamp>`, and only the newest five of those are kept.
 
-Other flags: `npx ampline-claude --version` prints the installed version, `--help` prints
-usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare commands above.
+## Commands
+
+| Command | What it does |
+|---|---|
+| `npx ampline-claude --install` | install, or update the installed copy. The explicit form, safe in scripts and CI |
+| `npx ampline-claude` | the same, but only from an interactive terminal |
+| `npx ampline-claude uninstall` or `--uninstall` | uninstall, as described above |
+| `npx ampline-claude --version` or `-v` | print the version |
+| `npx ampline-claude --help` or `-h` | print usage |
+| `ampline-claude --subagent` | what Claude Code runs for the subagent panel: reads a payload on stdin and prints one `{"id","content"}` JSON line per row. You do not run it by hand |
+
+Flags are matched anywhere in the arguments, and an unknown one is ignored. Run with no flag, no
+terminal and nothing on stdin, it prints a one-line hint to stderr and exits 0. The installer
+prints a few plain lines for a human to read, and that text is not meant to be parsed. Check the
+exit code instead: `0` on success, `1` when it could not read or parse `settings.json`, back it up,
+copy the runtime or write the file.
 
 ## What it shows
 
@@ -220,16 +239,18 @@ repository for the branch uses the same 30-directory limit.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `segments` | string[] | all nine | which segments render, in order. Unknown names are dropped silently. |
-| `line2From` | string | `"fiveHour"` | the segment where line 2 begins when wrapping |
-| `separator` | string | `" │ "` | rendered between segments |
+| `segments` | string[] | all nine | which segments render, in order. Names are case-sensitive. Unknown names are dropped silently, and a name that appears twice is kept once (the first). An empty list means the default. |
+| `line2From` | string | `"fiveHour"` | the segment where line 2 begins when wrapping. It must be one of your `segments`, otherwise it falls back to `fiveHour`, or to the middle segment if `fiveHour` is not in your list. Naming the first segment means never wrap. |
+| `separator` | string | `" │ "` | rendered between segments. Control and invisible characters are removed, and it is cut to 16 characters. |
 | `color` | boolean | `true` | `false` strips all ANSI from the output |
 | `paceColors` | boolean | `false` | color the 5-hour and weekly bars by where your pace is heading, not only where it is now. It is a straight-line projection from elapsed time, so it does not apply in the first 10% of a window, and it assumes a 5-hour and a 7-day window. It can raise a bar to orange early, never colors one calmer than the plain ramp would, and never reaches bold or `⚠`. |
-| `maxBranchLength` | number | `24` | branch name truncation |
-| `maxTaskLength` | number | `40` | task text truncation |
+| `maxBranchLength` | number | `24` | branch name truncation. A fraction is rounded down and the value is capped at 200. A value under 5, or one that is not a finite number, falls back to the default. |
+| `maxTaskLength` | number | `40` | task text truncation, with the same rules as `maxBranchLength` |
 
 Invalid values get corrected silently instead of raising an error, the same way the tool
-degrades everywhere else. See `.amplinerc.json.example` in this repo for a starting point.
+degrades everywhere else. Unknown keys are ignored. A `.amplinerc.json` is read only if it is a
+regular file of at most 64 KB, and one that is a directory, a special file or too big is skipped
+like a missing one. See `.amplinerc.json.example` in this repo for a starting point.
 
 ## How it works
 
@@ -255,8 +276,11 @@ hours and 7 days, since the payload never says how long a window is. It uses the
 only. A dimmed cached bar never shows one, because a cached quota compared against a live clock
 would mislead.
 
-**Degradation.** Every segment either renders or returns nothing. Never a crash, never a hang.
-If data's missing, that one segment just gets skipped and the rest of the line still renders.
+**Degradation.** Every segment either renders or returns nothing, never a crash, and the render
+path always exits 0. If data's missing, that one segment just gets skipped and the rest of the
+line still renders. The one subprocess it starts, `git status`, has a 400ms timeout, and input
+that comes from a checkout or from stdin is read only up to fixed limits (see
+[`SECURITY.md`](SECURITY.md)).
 
 More detail:
 - [`CLAUDE.md`](CLAUDE.md): module architecture, frozen interfaces, the rules that apply everywhere
@@ -274,8 +298,10 @@ More detail:
 
 No. It runs entirely locally, no API calls of any kind. Rendering is a handful of file reads
 and, at most, one cached `git status` call every 5 seconds. Typical render time is a few
-milliseconds. The worst case, a cache miss on a large repo, is capped at 400ms, and a `git status`
-that fails or times out is not retried for 30 seconds, so a slow repo does not pay for it on every render.
+milliseconds. The one subprocess, `git status`, is capped at 400ms, so a cache miss on a large repo
+costs at most that, and a `git status` that fails or times out is not retried for 30 seconds, so a
+slow repo does not pay for it on every render. The cap covers only that call: the file reads
+are not time-limited, so a `~/.claude` on a slow network mount can slow a render down.
 The cost of that: after one transient failure the branch shows without its marker for up to 30 seconds.
 And if an earlier result between 5 and 60 seconds old exists, it is shown instead and no pause is
 started, so a repo that is always slow still pays the 400ms until that result ages out.
@@ -319,16 +345,19 @@ entirely when the repository's own config defines a content filter or an include
 system config (a Git LFS filter you installed, for example) are yours and are not checked. This
 narrows what a repository can make git do on every render; it does not remove it and is not a
 sandbox. The marker is also left out when the repository sits in a folder whose path contains
-`:` (macOS and Linux) or `;` (Windows), because git would read that as two ceilings. Treat a directory you did not clone yourself (an unpacked archive, for example) as you
-would before running git in it.
+`:` (macOS and Linux) or `;` (Windows), because git would read that as two ceilings. Treat a
+directory you did not clone yourself (an unpacked archive, for example) as you would before
+running git in it. Older git versions have two further gaps, which
+[`SECURITY.md`](SECURITY.md) describes.
 </details>
 
 <details>
 <summary>Can it break Claude Code?</summary>
 
 The installer never overwrites a `settings.json` it can't parse. It aborts and prints the
-parse error instead. And every statusline render either prints something or prints nothing.
-It never hangs and never exits non-zero.
+parse error instead, and it refuses to change the file at all if it cannot first make a backup.
+Every statusline render either prints something or prints nothing, and always exits 0. The one
+process it starts, `git status`, has a 400ms timeout.
 </details>
 
 <details>
@@ -389,14 +418,52 @@ Either way, use `npx ampline-claude --install` in scripts to install uncondition
   password. Otherwise the number still shows, as plain text. Terminals without hyperlink
   support, such as macOS Terminal.app, show the number without a link. `NO_COLOR` and
   `"color": false` also turn the link off.
-- **Linux is verified on real hardware. macOS is confirmed for the statusline render.** On
-  Linux the fixture suite, the install and uninstall flow, the shebang, UTF-8 glyph output,
-  and color behavior have all been confirmed, including the absolute-Node-path resolution a
-  version-managed Node needs (see `DECISIONS.md` D36). What a real Claude Code process
-  itself supplies as environment variables on Linux is still unconfirmed, since that check
-  was a controlled invocation rather than a live session. On macOS, v0.7.0 rendering,
-  including the pace marker glyph, has been confirmed working on a real Mac. The macOS
-  install and uninstall flow has not been confirmed separately.
+- **Verified on macOS, Linux and Windows hardware.** The statusline render, including the
+  pace marker glyph, is confirmed on a real Mac, on Linux (Ubuntu under WSL), and on Windows, where
+  it was also seen in a live Claude Code session (see `DECISIONS.md` D36, D39 and D47). On Linux
+  the fixture suite, the install and uninstall flow, the shebang, UTF-8 glyph output and color
+  behavior were confirmed, including the absolute Node path a version-managed Node needs. Not
+  confirmed: the environment variables a real Claude Code process supplies on Linux (that check
+  was a controlled invocation, not a live session), terminals and fonts beyond the ones tried, and
+  the installer's choice of a stable `PATH` entry over a Homebrew `Cellar` path, which is tested
+  with injected paths and has not been run on a Mac.
+- **Some file reads have no time limit.** Only the `git status` call has a timeout. Reading the
+  cache and the todo files is not time-limited, so a `~/.claude` on a slow network mount can slow a
+  render down.
+
+## Stability
+
+From 1.0.0, ampline-claude follows [SemVer](https://semver.org/spec/v2.0.0.html). A breaking
+change to any of the following waits for a major release:
+
+- **The command line:** `--install`, `uninstall` and `--uninstall`, `--version` and `-v`,
+  `--help` and `-h`, and `--subagent` (see [Commands](#commands)).
+- **The `.amplinerc.json` keys** `segments`, `line2From`, `separator`, `color`, `paceColors`
+  (opt-in) and `maxBranchLength` and `maxTaskLength`, with their types and defaults as listed
+  under [Configuration](#configuration), including the limits listed there.
+- **The stdin fields it reads.** For the statusline: `session_id`, `cwd`, `workspace.current_dir`,
+  `workspace.repo.name`, `model.id`, `model.display_name`, `effort.level`,
+  `context_window.used_percentage`, `rate_limits.five_hour` and `rate_limits.seven_day`
+  (`used_percentage`, `resets_at`), `cost.total_cost_usd`, `cost.total_lines_added`,
+  `cost.total_lines_removed`, and `pr.number`, `pr.url`, `pr.review_state`, `pr.kind`. For
+  `--subagent`: `columns` and, per entry in `tasks`, `id`, `label`, `description`, `name`,
+  `agentType`, `status`, `model`, `effort` and `tokenCount`. Fields Claude Code adds later are
+  ignored.
+- **The render path always exits 0.** A segment that cannot render is left out. (The installer is
+  different by design: it exits 1 when it cannot safely change `settings.json`.)
+- **The subagent output shape:** one `{"id","content"}` JSON line per row.
+
+The rules this README states are part of the behavior: bold only at the `max` effort, usage bars
+bold from 85%, and pace (the marker and `paceColors`) never adding bold or `⚠`. What may change in
+a minor release is how things look: the exact glyphs, hex colors, spacing and segment labels, and
+the tuning of pace coloring and the pace marker (its 10% dead zone, its cap and its projection).
+
+Not part of the promise: the `task` segment reads Claude Code's local todo files, whose location
+is an undocumented convention, so it is best-effort. Everything under `lib/` is internal. The
+package's `exports` field allows only `package.json`, so `require('ampline-claude/lib/...')`
+fails, and those modules can change in any release. The installer's printed output is for people
+to read and is not machine-readable; use its exit code. The statusline text itself is for
+terminals and is not a data format either. The reasoning is in `DECISIONS.md` D49.
 
 ---
 

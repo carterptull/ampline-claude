@@ -37,7 +37,7 @@ below, and update its Mermaid source and prose then, not on every release.
 | `bin/ampline-claude.js`, `lib/render.js`, or `lib/layout.js` | `render-sequence.md`, `overview.md` |
 | a new segment or module, or a changed `require()` edge | `c4-container.md`, `overview.md` |
 | `.github/workflows/ci.yml`, the `files` allowlist in `package.json`, `scripts/verify-pack.js`, or `SECURITY.md` | `deployment-security.md` |
-| `sanitize()`, the `git` call's flags or timeout, or any new foreign string reaching stdout | `deployment-security.md` |
+| `lib/safeRead.js`, the size limits in `lib/config.js` or `bin/ampline-claude.js`, `sanitize()`, the `git` call's flags or timeout, or any new foreign string reaching stdout | `deployment-security.md` |
 | a new external dependency or a new payload source | `c4-context.md`, `overview.md` |
 
 A routine fix or copy change doesn't need a diagram update.
@@ -58,4 +58,4 @@ A routine fix or copy change doesn't need a diagram update.
 - Verify by viewing the rendered file on github.com. Reading the source is not verification.
 
 ---
-_Last updated: 2026-10-07 · reflects v0.6.0_
+_Last updated: 2026-10-26 · reflects v1.0.0_

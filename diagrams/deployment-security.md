@@ -75,7 +75,7 @@ flowchart LR
         own["Own-property lookup<br/>review_state, exact match on pr.kind"]
         gitscan["<b>Repo-config scan</b><br/>skip git status if the repo's own config<br/>has a filter, include or includeIf"]
         gitcall["<b>Constrained git call</b><br/>-c core.fsmonitor= · --no-optional-locks<br/>started at the scanned .git entry · --ignore-submodules=dirty<br/>400ms timeout · no shell"]
-        cfgval["Config validation<br/>segment allowlist, numeric floors"]
+        cfgval["Config validation<br/>segment allowlist, length caps,<br/>bounded regular-file reads"]
     end
 
     out(["stdout<br/>to Claude Code"])
@@ -143,4 +143,4 @@ terminal control sequences from untrusted input. Problems in Claude Code, `git`,
 CLI are out of scope. See [`../SECURITY.md`](../SECURITY.md).
 
 ---
-_Last updated: 2026-10-26 · reflects the unreleased 1.0.0 work_
+_Last updated: 2026-10-26 · reflects v1.0.0_

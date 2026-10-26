@@ -109,4 +109,4 @@ stated in [`../CLAUDE.md`](../CLAUDE.md). For where the model segment sits in a 
 [`render-sequence.md`](render-sequence.md), and for the module map see [`overview.md`](overview.md).
 
 ---
-_Last updated: 2026-10-07 · reflects v0.6.0_
+_Last updated: 2026-10-26 · reflects v1.0.0_

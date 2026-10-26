@@ -10,6 +10,18 @@ A zero-dependency Claude Code statusline. Reads a JSON payload on stdin, prints 
 lines of ANSI-colored text to stdout. Installed via `npx ampline-claude --install` into
 `~/.claude/settings.json`.
 
+## Stability (1.0 and later)
+
+The public surface follows SemVer: the CLI flags and subcommands, the `.amplinerc.json` keys with
+their types and defaults, the stdin fields read, the render path always exiting 0, and the subagent
+`{"id","content"}` lines. The rules the README states (bold only at `max`, usage bars bold from 85%,
+pace never adding bold or `⚠`) are behavior too. Glyphs, hex colors, spacing, labels and the tuning
+of pace coloring and the pace marker may change in a minor release. The `task` segment is best-effort,
+everything under `lib/` is internal (D45), and the installer's printed output is not machine-readable.
+The README's "Stability" section is the user-facing statement and D49 the reasoning. Before changing
+anything on that list, read both: a change to the frozen part is a major release, and a change that only
+moves a glyph or a hex value still has to keep the README, the diagrams and the tests in step.
+
 ## Rules that apply everywhere, not just where first introduced
 
 - **Never add a runtime dependency.** `package.json` has no `dependencies` field. Keeping it
@@ -43,9 +55,11 @@ lines of ANSI-colored text to stdout. Installed via `npx ampline-claude --instal
 ## Module layout
 
 ```
-bin/ampline-claude.js     Entry point. Six argv-driven paths: --help, --version, --install,
+bin/ampline-claude.js     Entry point. Six argv-driven paths: --help/-h, --version/-v, --install,
                            uninstall/--uninstall, subagent (stdin piped, --subagent), and the
                            default statusline path (TTY -> installer, piped stdin -> render).
+                           The `--help` text names every one of these and is kept in step with
+                           the README's "Commands" table. stdin is capped at 8M characters (D48).
                            `if (require.main === module) main();` guards against a bare
                            `require('ampline-claude')` triggering a real install as a side effect.
                            `package.json` declares `exports: { "./package.json": ... }` and no `main`:
@@ -69,7 +83,10 @@ lib/
                             else. The frozen limits are in D48.
   usage.js                 stdin rate_limits -> write-through cache -> resolveUsage(). Synchronous.
                             Also the window pace math: elapsedFraction, paceRampPct (D39, D40).
-  config.js                .amplinerc.json loader: walk up from cwd, then home, first file wins.
+  config.js                .amplinerc.json loader: walk up from the payload's directory (at most
+                            MAX_WALK_UP = 30 levels, shared with git.js), then home, first file wins.
+                            Bounds every value: nine unique segments, separator <= 16 code points,
+                            lengths floored and clamped to 5..200 (D48).
   layout.js                One-line vs two-line wrapping, reading COLUMNS (falls back to
                             DEFAULT_COLUMNS when unset/non-numeric).
   render.js                Assembles segments per config into the final line(s). Entry point
@@ -130,7 +147,9 @@ lib/
 
 ## Frozen module interfaces
 
-Treat these signatures as fixed. Changing one means changing every call site.
+Treat these signatures as fixed. Changing one means changing every call site. They are frozen for
+contributors, not for importers: `lib/` is internal and not importable by package path (D45), so
+they are not part of the public surface in "Stability" above.
 
 ```
 lib/colors.js    fg(r,g,b) · RESET · BOLD · DIM · EFFORT_ORDER · WHEEL
