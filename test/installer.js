@@ -20,6 +20,26 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
   const PKG_VERSION = require(path.join(ROOT, 'package.json')).version;
   const fwd = (p) => p.replace(/\\/g, '/');
 
+  // lib/install.js reads CLAUDE_CONFIG_DIR when it is loaded. It is always loaded with that set to
+  // a throwaway directory (never the developer's, never unset: unset means the real ~/.claude),
+  // after which the environment is put back and the cached module dropped.
+  const INSTALL_MODULES = [path.join(ROOT, 'lib', 'install.js'), path.join(ROOT, 'lib', 'claudeDir.js')];
+  const loadInstallIn = (cfgDir) => {
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    try {
+      process.env.CLAUDE_CONFIG_DIR = cfgDir;
+      for (const m of INSTALL_MODULES) delete require.cache[require.resolve(m)];
+      return require(INSTALL_MODULES[0]);
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved;
+      for (const m of INSTALL_MODULES) delete require.cache[require.resolve(m)];
+    }
+  };
+  // For the pure-function checks only: nothing is ever written under this directory.
+  const unitCfg = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-cfg-'));
+  const install = loadInstallIn(unitCfg);
+  try { fs.rmSync(unitCfg, { recursive: true, force: true }); } catch {}
+
   // ---- harness ---------------------------------------------------------------------------
 
   // Runs the real binary in `home`. The environment is the developer's minus everything that
@@ -47,6 +67,16 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
   const lines = (s) => s.replace(/\r\n/g, '\n').replace(/\n$/, '').split('\n');
   const entry = (home) => `${fwd(runtimeDir(home))}/bin/ampline-claude.js`;
   const stamp = (n) => `2026-01-${String(n).padStart(2, '0')}T10-00-00-000Z`;
+
+  // What a normal install prints on stdout (v0.6.0 printed exactly this), and the two lines that are
+  // added only for a Node in a versioned directory or a bare `node` fallback.
+  const SIX_LINES = [
+    '✓ ampline-claude installed.', '', 'Restart Claude Code or start a new session.', '',
+    'Customize with ~/.amplinerc.json or a project .amplinerc.json:',
+    'https://github.com/carterptull/ampline-claude#configuration',
+  ];
+  const UPGRADE_NOTE = '  Note: re-run `npx ampline-claude --install` after upgrading Node.';
+  const withoutGated = (out) => out.filter((l) => !l.startsWith('  Node: ') && l !== UPGRADE_NOTE);
 
   // What a user's own settings might hold besides the statusline entries.
   const USER_SETTINGS = () => ({
@@ -80,17 +110,19 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
     }
     check('no backup is written when there was no settings.json', !fs.existsSync(claude(home)) || backups(home).length === 0, JSON.stringify(backups(home)));
 
+    // The website embeds these six lines verbatim and compares them in CI, so a normal install
+    // must print exactly them. The Node and upgrade-note lines appear only when the Node in use
+    // sits in a versioned directory; if this machine's node does, those two are expected, are
+    // checked, and are removed before the exact comparison.
     const out = lines(r.out);
-    const nodeLine = out[1] || '';
     const nodeInCmd = /^"([^"]+)"/.exec(cmd || '');
-    check('the transcript is: installed, the node path chosen, the upgrade note, restart, customize',
-      out[0] === '✓ ampline-claude installed.'
-        && nodeInCmd && nodeLine === `  Node: ${nodeInCmd[1]}`
-        && out[2] === '  Note: re-run `npx ampline-claude --install` after upgrading Node.'
-        && out[3] === '' && out[4] === 'Restart Claude Code or start a new session.' && out[5] === ''
-        && out[6] === 'Customize with ~/.amplinerc.json or a project .amplinerc.json:'
-        && out[7] === 'https://github.com/carterptull/ampline-claude#configuration' && out.length === 8,
-      JSON.stringify(out));
+    if (!install.isVersionedNodePath(process.execPath)) {
+      check('a normal install prints exactly the six lines v0.6.0 printed', JSON.stringify(out) === JSON.stringify(SIX_LINES), JSON.stringify(out));
+    } else {
+      check('an install under a versioned node adds the Node line and the upgrade note after the first line',
+        !!nodeInCmd && out[1] === `  Node: ${nodeInCmd[1]}` && out[2] === UPGRADE_NOTE, JSON.stringify(out));
+      check('... and is otherwise exactly the six lines', JSON.stringify([out[0], ...out.slice(3)]) === JSON.stringify(SIX_LINES), JSON.stringify(out));
+    }
 
     // The installed copy really runs.
     const rendered = spawnSync(process.execPath, [path.join(runtimeDir(home), 'bin', 'ampline-claude.js'), '--version'], {
@@ -110,6 +142,10 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
     const afterSecond = fs.readFileSync(settingsPath(home), 'utf8');
     check('both installs exit 0', first.status === 0 && second.status === 0, `${first.status}, ${second.status}`);
     check('the first install over an existing file backs it up', firstBackups.length === 1 && first.out.includes('Previous settings backed up to settings.json.backup.'), JSON.stringify(firstBackups));
+    const firstLines = withoutGated(lines(first.out));
+    check('... and prints the backup line right after the first line, then the rest of the six',
+      firstLines[0] === SIX_LINES[0] && firstLines[1] === `  Previous settings backed up to ${firstBackups[0]}`
+        && JSON.stringify(firstLines.slice(2)) === JSON.stringify(SIX_LINES.slice(1)) && first.err === '', JSON.stringify(firstLines));
     check('a second install leaves settings.json byte-identical', afterFirst === afterSecond, 'settings.json changed');
     check('a second install backs the previous file up again', backups(home).length === 2 && second.out.includes('Previous settings backed up to'), JSON.stringify(backups(home)));
     check('the backup holds the settings from before the install', (() => {
@@ -134,6 +170,11 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
     const s = readSettings(home);
     check('installing over a foreign statusLine prints a notice naming the old command',
       r.status === 0 && r.out.includes('ampline-claude: replacing an existing statusLine command:') && r.out.includes('bash ~/my-statusline.sh'), JSON.stringify(r.out));
+    check('the notice comes first, then the normal lines, with nothing on stderr',
+      JSON.stringify(withoutGated(lines(r.out))) === JSON.stringify([
+        'ampline-claude: replacing an existing statusLine command:', '  bash ~/my-statusline.sh',
+        SIX_LINES[0], `  Previous settings backed up to ${backups(home)[0]}`, ...SIX_LINES.slice(1),
+      ]) && r.err === '', JSON.stringify(lines(r.out)));
     check('installing over a foreign statusLine replaces it and backs the old file up',
       s.statusLine.command.includes('ampline-claude.js') && backups(home).length === 1
         && JSON.parse(fs.readFileSync(path.join(claude(home), backups(home)[0]), 'utf8')).statusLine.command === 'bash ~/my-statusline.sh',
@@ -266,16 +307,33 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
       again.status === 0 && /nothing to remove/.test(again.out), JSON.stringify(again.out));
   });
 
-  // Only one of the two entries is ours: remove just that one.
+  // Only one of the two entries is ours: remove just that one. An unrelated foreign entry does
+  // not keep the runtime; one that still names ampline-claude (a wrapper around it) does.
   withHome((home) => {
     run(home, ['--install']);
     const s = readSettings(home);
     s.subagentStatusLine = { type: 'command', command: 'bash ~/sub.sh' };
     writeSettings(home, s);
+    fs.mkdirSync(cacheDir(home), { recursive: true });
     const r = run(home, ['uninstall']);
     const after = readSettings(home);
     check('uninstall removes our statusLine and leaves a foreign subagentStatusLine',
       r.status === 0 && !('statusLine' in after) && after.subagentStatusLine.command === 'bash ~/sub.sh', JSON.stringify(after));
+    check('... and, as the leftover is unrelated to ampline, removes the runtime and cache',
+      !fs.existsSync(runtimeDir(home)) && !fs.existsSync(cacheDir(home)) && !/Kept the runtime/.test(r.out), JSON.stringify(r.out));
+  });
+  withHome((home) => {
+    run(home, ['--install']);
+    const s = readSettings(home);
+    s.subagentStatusLine = { type: 'command', command: '~/bin/ampline-claude-wrap.sh --subagent' };
+    writeSettings(home, s);
+    fs.mkdirSync(cacheDir(home), { recursive: true });
+    const r = run(home, ['uninstall']);
+    const after = readSettings(home);
+    check('uninstall removes our statusLine and leaves a wrapper subagentStatusLine untouched',
+      r.status === 0 && !('statusLine' in after) && after.subagentStatusLine.command === '~/bin/ampline-claude-wrap.sh --subagent', JSON.stringify(after));
+    check('... and keeps the runtime and cache that the wrapper may call, saying so',
+      fs.existsSync(runtimeDir(home)) && fs.existsSync(cacheDir(home)) && /Kept the runtime copy: subagentStatusLine/.test(r.out), JSON.stringify(r.out));
   });
 
   // Settings already lack the entries (Minor 17): the runtime and cache still go.
@@ -314,23 +372,43 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
 
   // ---- stale staging directories (Minor 9) -----------------------------------------------
 
-  withHome((home) => {
-    const hooks = path.join(claude(home), 'hooks');
+  // A pid that is certainly gone: a child that has already exited. One that is certainly alive:
+  // this test process.
+  const deadChild = spawnSync(process.execPath, ['-e', '0'], { cwd: os.tmpdir() });
+  const DEAD_PID = deadChild.pid;
+  const ALIVE_PID = process.pid;
+  const stage = (hooks, names, ageMinutes) => {
     fs.mkdirSync(hooks, { recursive: true });
-    const old = ['ampline-claude.new-111', 'ampline-claude.old-222'];
-    const fresh = 'ampline-claude.new-333';
-    const unrelated = 'ampline-claude-extra.new-1';
-    for (const d of [...old, fresh, unrelated]) {
+    for (const d of names) {
       fs.mkdirSync(path.join(hooks, d), { recursive: true });
       fs.writeFileSync(path.join(hooks, d, 'f.txt'), 'x\n');
+      const t = new Date(Date.now() - ageMinutes * 60 * 1000);
+      fs.utimesSync(path.join(hooks, d), t, t);
     }
-    const longAgo = new Date(Date.now() - 10 * 60 * 1000);
-    for (const d of [...old, unrelated]) fs.utimesSync(path.join(hooks, d), longAgo, longAgo);
+  };
+
+  withHome((home) => {
+    const hooks = path.join(claude(home), 'hooks');
+    const stale = [`ampline-claude.new-${DEAD_PID}`, `ampline-claude.old-${DEAD_PID}`];
+    const aliveOld = `ampline-claude.new-${ALIVE_PID}`;
+    const deadFresh = `ampline-claude.old-${DEAD_PID + 1000000}`;
+    const unrelated = 'ampline-claude-extra.new-1';
+    stage(hooks, [...stale, aliveOld, unrelated], 10);
+    stage(hooks, [deadFresh], 0);
     const r = run(home, ['--install']);
-    check('install removes staging directories older than a minute',
-      r.status === 0 && old.every((d) => !fs.existsSync(path.join(hooks, d))), JSON.stringify(fs.readdirSync(hooks)));
-    check('... but not a fresh one (another install may be running) or an unrelated name',
-      fs.existsSync(path.join(hooks, fresh)) && fs.existsSync(path.join(hooks, unrelated)), JSON.stringify(fs.readdirSync(hooks)));
+    check('install removes staging directories that are older than a minute and belong to a process that is gone',
+      r.status === 0 && stale.every((d) => !fs.existsSync(path.join(hooks, d))), JSON.stringify(fs.readdirSync(hooks)));
+    check('... but not an old one whose process is still running, a fresh one, or an unrelated name',
+      fs.existsSync(path.join(hooks, aliveOld)) && fs.existsSync(path.join(hooks, deadFresh)) && fs.existsSync(path.join(hooks, unrelated)), JSON.stringify(fs.readdirSync(hooks)));
+  });
+  withHome((home) => {
+    // Uninstall clears its own leftovers too, even when there is nothing else to remove.
+    const hooks = path.join(claude(home), 'hooks');
+    const stale = `ampline-claude.new-${DEAD_PID}`;
+    stage(hooks, [stale], 10);
+    const r = run(home, ['uninstall']);
+    check('uninstall removes stale staging directories and says it removed something',
+      r.status === 0 && !fs.existsSync(path.join(hooks, stale)) && /removed the runtime copy and cache/.test(r.out), JSON.stringify(r.out));
   });
 
   // ---- --version / --help ----------------------------------------------------------------
@@ -361,9 +439,31 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
     }
   }
 
-  // ---- in-process: node path chooser (K2), command matching and backup names (S4) --------
+  // A config file above the throwaway home (on Windows os.tmpdir() sits inside the profile, which
+  // can hold a real .amplinerc.json) must not reach a render that has no cwd of its own. The
+  // "profile" here is a throwaway directory holding a config with a recognisable separator.
+  {
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-profile-'));
+    try {
+      fs.writeFileSync(path.join(profile, '.amplinerc.json'), JSON.stringify({ separator: ' @@@ ', segments: ['model', 'context'] }), 'utf8');
+      const payload = JSON.stringify({ session_id: 'k3', model: { id: 'claude-haiku-5-5', display_name: 'Haiku 5.5' }, context_window: { used_percentage: 12, remaining_percentage: 88 } });
+      const render = (home) => spawnSync(process.execPath, [BIN], {
+        input: payload, encoding: 'utf8', timeout: 20000, cwd: home,
+        env: { ...cleanEnv(), HOME: home, USERPROFILE: home, COLUMNS: '120' },
+      }).stdout || '';
+      const bare = makeTempHome(profile);
+      fs.rmSync(path.join(bare, '.amplinerc.json'), { force: true });
+      check('control: a home without its own config lets the walk-up reach a config in the parent directory',
+        render(bare).includes('@@@'), 'the parent config was not reached, so the next check proves nothing');
+      const home = makeTempHome(profile);
+      check('the .amplinerc.json that makeTempHome writes stops the walk-up: a profile-level config cannot change a render with no cwd',
+        !render(home).includes('@@@') && fs.existsSync(path.join(home, '.amplinerc.json')) && fs.readFileSync(path.join(home, '.amplinerc.json'), 'utf8').trim() === '{}', JSON.stringify(render(home)));
+    } finally {
+      try { fs.rmSync(profile, { recursive: true, force: true }); } catch {}
+    }
+  }
 
-  const install = require('../lib/install');
+  // ---- in-process: node path chooser (K2), command matching and backup names (S4) --------
 
   {
     const { chooseNodePath, isVersionedNodePath } = install;
@@ -378,6 +478,8 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
         '/home/u/.asdf/installs/nodejs/24.1.0/bin/node', '/home/u/.nodenv/versions/24.1.0/bin/node',
         '/home/u/.local/share/mise/installs/node/24.1.0/bin/node', 'C:\\Users\\u\\AppData\\Roaming\\nvm\\v24.1.0\\node.exe'].every(isVersionedNodePath),
       'a versioned path was not recognised');
+    check('versioned detection: snap revisions are versioned, /snap/bin is not',
+      isVersionedNodePath('/snap/node/9876/bin/node') && !isVersionedNodePath('/snap/bin/node'), 'snap');
     check('versioned detection: ordinary install locations are not versioned',
       ['/usr/bin/node', '/usr/local/bin/node', '/opt/homebrew/bin/node', 'C:\\Program Files\\nodejs\\node.exe', '/home/u/node-v24-linux-x64/bin/node'].every((p) => !isVersionedNodePath(p)),
       'a stable path was flagged');
@@ -440,6 +542,26 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
     });
     check('a PATH entry whose realpath fails is skipped', !!broken && broken.path === cellar && broken.source === 'execPath', JSON.stringify(broken));
 
+    // No stable PATH entry at all: the real file behind execPath, but only if that is not versioned too.
+    const viaLink = '/home/u/.nvm/versions/node/v24.1.0/bin/node';
+    const backing = posix({
+      execPath: viaLink, pathEntries: ['/usr/bin'],
+      realpath: real({ [viaLink]: '/opt/real/bin/node', '/usr/bin/node': '/usr/bin/node' }), isFile: exists([viaLink, '/opt/real/bin/node', '/usr/bin/node']),
+    });
+    check('a versioned execPath that is a link to an unversioned file writes that file when PATH has no match',
+      !!backing && backing.path === '/opt/real/bin/node' && backing.source === 'realpath', JSON.stringify(backing));
+    const backingVersioned = posix({
+      execPath: viaLink, pathEntries: [],
+      realpath: real({ [viaLink]: '/opt/homebrew/Cellar/node/24.1.0/bin/node' }), isFile: exists([viaLink, '/opt/homebrew/Cellar/node/24.1.0/bin/node']),
+    });
+    check('... but a real file that is versioned as well is not written: execPath stays',
+      !!backingVersioned && backingVersioned.path === viaLink && backingVersioned.source === 'execPath', JSON.stringify(backingVersioned));
+    const snap = posix({
+      execPath: '/snap/node/9876/bin/node', pathEntries: ['/snap/bin'],
+      realpath: real({ '/snap/node/9876/bin/node': '/snap/node/9876/bin/node', '/snap/bin/node': '/usr/bin/snap' }), isFile: exists(['/snap/node/9876/bin/node', '/snap/bin/node']),
+    });
+    check('snap: a revision path is versioned and a PATH shim for another binary is not used', !!snap && snap.path === '/snap/node/9876/bin/node' && snap.source === 'execPath', JSON.stringify(snap));
+
     const noExec = posix({ execPath: '/gone/node', pathEntries: ['/usr/bin'], realpath: real({}), isFile: exists([]) });
     const relExec = posix({ execPath: 'node', pathEntries: ['/usr/bin'], realpath: real({}), isFile: exists(['node']) });
     check('an execPath that is missing or relative yields null (the caller falls back to bare node)', noExec === null && relExec === null, JSON.stringify([noExec, relExec]));
@@ -481,68 +603,162 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
       'wrong match');
   }
 
-  // ---- in-process: a failed backup aborts instead of rewriting without one (S4) -----------
+  // ---- the message list is a pure function: both branches of the Node/Note gate ------------
 
   {
+    const { installMessages } = install;
+    // console.log prints each element on its own, so the printed text is the elements joined by newlines.
+    const printed = (m) => m.join(String.fromCharCode(10)).split(String.fromCharCode(10));
+    const plain = installMessages({ chosen: { path: '/usr/bin/node', source: 'execPath' }, display: '/usr/bin/node', execPath: '/usr/bin/node', saved: null, foreignStatus: null, foreignSubagent: null });
+    check('installMessages: an ordinary node prints exactly the six lines', JSON.stringify(printed(plain)) === JSON.stringify(SIX_LINES), JSON.stringify(plain));
+
+    const brewPath = '/opt/homebrew/Cellar/node/24.1.0/bin/node';
+    const viaPath = installMessages({ chosen: { path: '/opt/homebrew/bin/node', source: 'path' }, display: '/opt/homebrew/bin/node', execPath: brewPath, saved: null, foreignStatus: null, foreignSubagent: null });
+    check('installMessages: a versioned execPath adds the Node line (the path written) and the upgrade note after the first line',
+      JSON.stringify(printed(viaPath)) === JSON.stringify([SIX_LINES[0], '  Node: /opt/homebrew/bin/node', UPGRADE_NOTE, ...SIX_LINES.slice(1)]), JSON.stringify(viaPath));
+
+    const kept = installMessages({ chosen: { path: brewPath, source: 'execPath' }, display: brewPath, execPath: brewPath, saved: null, foreignStatus: null, foreignSubagent: null });
+    check('installMessages: a versioned path that had to be kept is shown too', kept[1] === `  Node: ${brewPath}` && kept[2] === UPGRADE_NOTE, JSON.stringify(kept));
+
+    const bare = installMessages({ chosen: null, display: 'node (looked up on PATH each time Claude Code runs it)', execPath: '/usr/bin/node', saved: null, foreignStatus: null, foreignSubagent: null });
+    check('installMessages: the bare `node` fallback adds the Node line and the note', bare[1].startsWith('  Node: node') && bare[2] === UPGRADE_NOTE, JSON.stringify(bare));
+
+    const everything = installMessages({
+      chosen: { path: '/usr/bin/node', source: 'execPath' }, display: '/usr/bin/node', execPath: '/usr/bin/node',
+      saved: 'settings.json.backup.2026-01-01T10-00-00-000Z', foreignStatus: 'old status', foreignSubagent: 'old sub',
+    });
+    check('installMessages: foreign notices first, then the first line, the backup line, then the rest',
+      JSON.stringify(printed(everything)) === JSON.stringify([
+        'ampline-claude: replacing an existing statusLine command:', '  old status',
+        'ampline-claude: replacing an existing subagentStatusLine command:', '  old sub',
+        SIX_LINES[0], '  Previous settings backed up to settings.json.backup.2026-01-01T10-00-00-000Z', ...SIX_LINES.slice(1),
+      ]), JSON.stringify(everything));
+  }
+
+  // ---- in-process, in a throwaway config directory, with fs calls observed or failed -------
+
+  // A fresh throwaway CLAUDE_CONFIG_DIR with lib/install loaded against it.
+  const inSandbox = (fn) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-cfg-'));
-    const savedEnv = process.env.CLAUDE_CONFIG_DIR;
-    const realCopy = fs.copyFileSync;
+    try {
+      const mod = loadInstallIn(dir);
+      return fn({ dir, mod, settings: path.join(dir, 'settings.json') });
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
+  };
+  // Runs fn() with console output captured and some fs functions wrapped. `patches` maps a name to a
+  // factory that receives the real function and returns the replacement. Everything is put back.
+  const runPatched = (fn, patches = {}) => {
+    const orig = {};
+    const outs = [];
+    const errs = [];
     const realLog = console.log;
     const realErr = console.error;
     const savedExit = process.exitCode;
-    const outs = [];
-    const errs = [];
-    const modules = [path.join(ROOT, 'lib', 'install.js'), path.join(ROOT, 'lib', 'claudeDir.js')];
-    let sandboxed = null;
     try {
-      process.env.CLAUDE_CONFIG_DIR = dir;
-      for (const m of modules) delete require.cache[require.resolve(m)];
-      sandboxed = require(modules[0]);
-      const settings = path.join(dir, 'settings.json');
-      const original = JSON.stringify({ env: { KEEP: '1' }, statusLine: { type: 'command', command: 'bash ~/mine.sh' } }, null, 2) + '\n';
-      fs.writeFileSync(settings, original);
-      fs.copyFileSync = (src, dest, ...rest) => {
-        if (path.resolve(String(src)) === path.resolve(settings)) { const e = new Error('EACCES: simulated backup failure'); e.code = 'EACCES'; throw e; }
-        return realCopy.call(fs, src, dest, ...rest);
-      };
+      for (const [name, factory] of Object.entries(patches)) { orig[name] = fs[name]; fs[name] = factory(orig[name]); }
       console.log = (...a) => outs.push(a.join(' '));
       console.error = (...a) => errs.push(a.join(' '));
       process.exitCode = 0;
-      sandboxed.runInstaller();
-      const installCode = process.exitCode;
-      console.error = realErr;
-      fs.copyFileSync = realCopy;
-      check('an install whose backup fails exits 1 with a clear message and leaves settings.json untouched',
-        installCode === 1 && errs.some((e) => /could not back up/.test(e) && /Refusing to modify/.test(e)) && fs.readFileSync(settings, 'utf8') === original, JSON.stringify({ installCode, errs }));
-
-      // The same for uninstall: settings that point at us, a backup that fails, nothing removed.
-      const ours = JSON.stringify({ env: { KEEP: '1' }, statusLine: { type: 'command', command: `node "${sandboxed.ENTRY}"` } }, null, 2) + '\n';
-      fs.writeFileSync(settings, ours);
-      fs.mkdirSync(sandboxed.INSTALL_DIR, { recursive: true });
-      fs.writeFileSync(path.join(sandboxed.INSTALL_DIR, 'marker.txt'), 'x\n');
-      errs.length = 0;
-      fs.copyFileSync = (src, dest, ...rest) => {
-        if (path.resolve(String(src)) === path.resolve(settings)) { const e = new Error('EACCES: simulated backup failure'); e.code = 'EACCES'; throw e; }
-        return realCopy.call(fs, src, dest, ...rest);
-      };
-      console.error = (...a) => errs.push(a.join(' '));
-      process.exitCode = 0;
-      sandboxed.runInstaller({ uninstall: true });
-      const uninstallCode = process.exitCode;
-      console.error = realErr;
-      fs.copyFileSync = realCopy;
-      check('an uninstall whose backup fails exits 1, rewrites nothing and removes nothing',
-        uninstallCode === 1 && errs.some((e) => /could not back up/.test(e)) && fs.readFileSync(settings, 'utf8') === ours && fs.existsSync(path.join(sandboxed.INSTALL_DIR, 'marker.txt')), JSON.stringify({ uninstallCode, errs }));
+      fn();
+      return { code: process.exitCode, outs, errs };
     } finally {
+      for (const name of Object.keys(orig)) fs[name] = orig[name];
       console.log = realLog;
       console.error = realErr;
-      fs.copyFileSync = realCopy;
       process.exitCode = savedExit;
-      if (savedEnv === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = savedEnv;
-      for (const m of modules) delete require.cache[require.resolve(m)];
-      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
     }
-  }
+  };
+  const failCopyOf = (settings) => (real) => (src, dest, ...rest) => {
+    if (path.resolve(String(src)) === path.resolve(settings)) { const e = new Error('EACCES: simulated backup failure'); e.code = 'EACCES'; throw e; }
+    return real.call(fs, src, dest, ...rest);
+  };
+
+  inSandbox(({ mod, settings }) => {
+    const original = JSON.stringify({ env: { KEEP: '1' }, statusLine: { type: 'command', command: 'bash ~/mine.sh' } }, null, 2) + '\n';
+    fs.writeFileSync(settings, original);
+    const r = runPatched(() => mod.runInstaller(), { copyFileSync: failCopyOf(settings) });
+    check('an install whose backup fails exits 1 with a clear message and leaves settings.json untouched',
+      r.code === 1 && r.errs.some((e) => /could not back up/.test(e) && /Refusing to modify/.test(e)) && fs.readFileSync(settings, 'utf8') === original, JSON.stringify(r));
+    check('... and, because the backup comes first, has not refreshed the runtime copy either',
+      !fs.existsSync(mod.INSTALL_DIR) && r.outs.length === 0, JSON.stringify(r));
+
+    // The same for uninstall: settings that point at us, a backup that fails, nothing removed.
+    const ours = JSON.stringify({ env: { KEEP: '1' }, statusLine: { type: 'command', command: `node "${mod.ENTRY}"` } }, null, 2) + '\n';
+    fs.writeFileSync(settings, ours);
+    fs.mkdirSync(mod.INSTALL_DIR, { recursive: true });
+    fs.writeFileSync(path.join(mod.INSTALL_DIR, 'marker.txt'), 'x\n');
+    const u = runPatched(() => mod.runInstaller({ uninstall: true }), { copyFileSync: failCopyOf(settings) });
+    check('an uninstall whose backup fails exits 1, rewrites nothing and removes nothing',
+      u.code === 1 && u.errs.some((e) => /could not back up/.test(e)) && fs.readFileSync(settings, 'utf8') === ours && fs.existsSync(path.join(mod.INSTALL_DIR, 'marker.txt')), JSON.stringify(u));
+  });
+
+  // Minor 8: the temp file is created with the target's mode, not the umask default.
+  inSandbox(({ mod, settings }) => {
+    fs.writeFileSync(settings, JSON.stringify({ env: { KEEP: '1' } }) + '\n');
+    if (!WIN) fs.chmodSync(settings, 0o600);
+    const expected = fs.statSync(settings).mode & 0o777;
+    const seen = [];
+    runPatched(() => mod.runInstaller(), {
+      writeFileSync: (real) => (p, data, opts) => { seen.push({ p: String(p), opts }); return real.call(fs, p, data, opts); },
+    });
+    const tmpWrite = seen.find((c) => c.p.endsWith('.tmp'));
+    check('the settings temp file is created with the target\'s mode (so it is never briefly more readable)',
+      !!tmpWrite && !!tmpWrite.opts && typeof tmpWrite.opts === 'object' && tmpWrite.opts.mode === expected, JSON.stringify(seen.map((c) => [c.p, c.opts])));
+  });
+
+  // Minor 10: a change another process makes to settings.json while the install runs is kept.
+  inSandbox(({ mod, settings }) => {
+    fs.writeFileSync(settings, JSON.stringify({ env: { KEEP: '1' } }) + '\n');
+    let edited = false;
+    const r = runPatched(() => mod.runInstaller(), {
+      cpSync: (real) => (...a) => {
+        if (!edited) { edited = true; const s = JSON.parse(fs.readFileSync(settings, 'utf8')); s.lateKey = 'added while installing'; fs.writeFileSync(settings, JSON.stringify(s)); }
+        return real.apply(fs, a);
+      },
+    });
+    const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    check('an install keeps a change made to settings.json while the runtime was being copied',
+      r.code === 0 && edited && after.lateKey === 'added while installing' && after.env.KEEP === '1' && !!after.statusLine && !!after.subagentStatusLine, JSON.stringify({ r, after }));
+  });
+  inSandbox(({ mod, settings }) => {
+    fs.writeFileSync(settings, JSON.stringify({ env: { KEEP: '1' }, statusLine: { type: 'command', command: `node "${mod.ENTRY}"` } }) + '\n');
+    let edited = false;
+    const r = runPatched(() => mod.runInstaller({ uninstall: true }), {
+      readFileSync: (real) => (p, ...a) => {
+        const text = real.call(fs, p, ...a);
+        if (!edited && path.resolve(String(p)) === path.resolve(settings)) {
+          edited = true;
+          const s = JSON.parse(text); s.lateKey = 'added during uninstall';
+          fs.writeFileSync(settings, JSON.stringify(s));
+        }
+        return text;
+      },
+    });
+    const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    check('an uninstall keeps a change made to settings.json after it first read the file',
+      r.code === 0 && edited && after.lateKey === 'added during uninstall' && !('statusLine' in after), JSON.stringify({ r, after }));
+  });
+
+  // copyRuntime: when the swap fails, the previous install is put back and nothing is left behind.
+  inSandbox(({ mod, settings }) => {
+    runPatched(() => mod.runInstaller()); // a first, real install
+    fs.writeFileSync(path.join(mod.INSTALL_DIR, 'marker.txt'), 'previous install\n');
+    const before = fs.readFileSync(settings, 'utf8');
+    const r = runPatched(() => mod.runInstaller(), {
+      renameSync: (real) => (a, b) => {
+        if (String(a).includes('.new-') && path.resolve(String(b)) === path.resolve(mod.INSTALL_DIR)) { const e = new Error('EBUSY: simulated swap failure'); e.code = 'EBUSY'; throw e; }
+        return real.call(fs, a, b);
+      },
+    });
+    const parent = path.dirname(mod.INSTALL_DIR);
+    check('a failed swap exits 1 and says where it could not install',
+      r.code === 1 && r.errs.some((e) => /could not install to/.test(e) && /simulated swap failure/.test(e)), JSON.stringify(r));
+    check('... puts the previous install back, leaves no staging directory, and does not touch settings.json',
+      (() => { try { return fs.readFileSync(path.join(mod.INSTALL_DIR, 'marker.txt'), 'utf8'); } catch { return null; } })() === 'previous install\n'
+        && !fs.readdirSync(parent).some((f) => /\.(new|old)-/.test(f)) && fs.readFileSync(settings, 'utf8') === before, JSON.stringify(fs.readdirSync(parent)));
+  });
 }
 
 module.exports = { runInstallerTests };
