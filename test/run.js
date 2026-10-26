@@ -688,7 +688,7 @@ function runPaceColorTests() {
     withPace(home);
     const dir = path.join(home, '.claude', 'cache', 'ampline');
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'usage.json'),
+    fs.writeFileSync(path.join(dir, require('../lib/cache').safeKey('usage') + '.json'),
       JSON.stringify({ fiveHour: { percentage: 40, resetsAtMs: Date.now() + 4 * 3600 * 1000 }, weekly: null }), 'utf8');
   };
   runInline('binary: cached (stale) usage ignores pace color and marker even with paceColors on',
@@ -1828,7 +1828,15 @@ function runGitTrustTests() {
         });
         out += String(res.stdout || '').replace(/\x1b\[[0-9;]*m/g, '') + '\n';
       }
-      try { cacheFiles = fs.readdirSync(path.join(home, '.claude', 'cache', 'ampline')).filter((f) => f.startsWith('git_')); } catch {}
+      // Only entries that hold a status count. A remembered failure ({ failed: true }) is allowed: it
+      // carries nothing a repository could influence (see the negative-cache tests in runRobustnessTests).
+      try {
+        const cacheDir = path.join(home, '.claude', 'cache', 'ampline');
+        cacheFiles = fs.readdirSync(cacheDir).filter((f) => {
+          if (!f.startsWith('git_')) return false;
+          try { return JSON.parse(fs.readFileSync(path.join(cacheDir, f), 'utf8')).failed !== true; } catch { return true; }
+        });
+      } catch {}
     } finally {
       try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
     }
@@ -2144,6 +2152,101 @@ function runGitTrustTests() {
   }
 }
 
+// ---- Robustness minors: cache keys, git failures, subagent/model/cost edges, walk-up -----------
+// Each is a small input class that used to print junk, collide or stall, plus behavior that had
+// no test at all (config walk-up precedence, cache.js, line2From, token formatting).
+function runRobustnessTests() {
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    robustness: ' + name);
+    else fail('robustness: ' + name, detail);
+  };
+  const plainText = (o) => String(o).replace(/\x1b\[[0-9;]*m/g, '');
+
+  // ---- cache.js: keys, round trips, prune. A child process, because CACHE_DIR is fixed at load. ----
+  const cacheChild = (body) => {
+    const r = spawnSync(process.execPath, ['-e',
+      `const c=require(process.argv[1]+'/lib/cache.js');const fs=require('fs');const path=require('path');` +
+      `const out=(function(){${body}})();process.stdout.write(JSON.stringify(out))`, ROOT],
+    childOptions());
+    try { return JSON.parse(r.stdout); } catch { return { error: (r.stderr || '').slice(0, 300) }; }
+  };
+  const keys = cacheChild(`
+    const k = ['git:/x/a.b', 'git:/x/a_b', 'git:/x/a-b', 'task:s1', 'task:s_1', 'x/1', 'x:1', 'x_1', '', 'a'.repeat(500), 'a'.repeat(499) + 'b'];
+    return k.map((key) => c.safeKey(key));`);
+  check('safeKey returns a hash-suffixed, filename-safe slug for every key',
+    Array.isArray(keys) && keys.every((x) => /^[A-Za-z0-9_-]*-[0-9a-f]{16}$/.test(x) && x.length <= 64), JSON.stringify(keys));
+  check('keys that slug to the same text get different file names',
+    Array.isArray(keys) && new Set(keys).size === keys.length, JSON.stringify(keys));
+  const roundTrip = cacheChild(`
+    c.write('git:/x/a.b', { n: 1 });
+    c.write('git:/x/a_b', { n: 2 });
+    const a = c.read('git:/x/a.b'), b = c.read('git:/x/a_b');
+    const files = fs.readdirSync(c.CACHE_DIR).filter((f) => f.startsWith('git_'));
+    c.remove('git:/x/a.b');
+    return { a: a && a.value, b: b && b.value, files: files.length, goneA: c.read('git:/x/a.b'), stillB: (c.read('git:/x/a_b') || {}).value };`);
+  check('/x/a.b and /x/a_b no longer share one cache file',
+    roundTrip.files === 2 && roundTrip.a && roundTrip.a.n === 1 && roundTrip.b && roundTrip.b.n === 2, JSON.stringify(roundTrip));
+  check('remove deletes only its own key', roundTrip.goneA === null && roundTrip.stillB && roundTrip.stillB.n === 2, JSON.stringify(roundTrip));
+  const missing = cacheChild(`
+    fs.mkdirSync(c.CACHE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(c.CACHE_DIR, c.safeKey('bad') + '.json'), '{not json');
+    return { none: c.read('never-written'), bad: c.read('bad') };`);
+  check('a missing or corrupt entry reads as null', missing.none === null && missing.bad === null, JSON.stringify(missing));
+  const pruned = cacheChild(`
+    const day = 24 * 60 * 60 * 1000;
+    const age = (key, days) => { const p = path.join(c.CACHE_DIR, c.safeKey(key) + '.json'); const t = new Date(Date.now() - days * day); fs.utimesSync(p, t, t); };
+    c.write('prune-old', { v: 1 }); c.write('prune-new', { v: 2 }); c.write('prune-nearly', { v: 3 });
+    age('prune-old', 8); age('prune-nearly', 6);
+    c.prune();
+    return { old: c.read('prune-old'), fresh: (c.read('prune-new') || {}).value, nearly: (c.read('prune-nearly') || {}).value };`);
+  check('prune removes files older than seven days and keeps newer ones',
+    pruned.old === null && pruned.fresh && pruned.fresh.v === 2 && pruned.nearly && pruned.nearly.v === 3, JSON.stringify(pruned));
+
+  // ---- git: a failing `git status` is remembered for 30 s ----
+  const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' });
+  if (gitProbe.error || gitProbe.status !== 0) {
+    check('git is available to run the negative-cache tests', false, 'the git binary is needed for these tests');
+  } else {
+    const home = makeTempHome();
+    try {
+      const gitEnvFor = () => {
+        const base = { ...process.env };
+        for (const k of Object.keys(base)) if (k.startsWith('GIT_')) delete base[k];
+        for (const k of ['NO_COLOR', 'FORCE_COLOR', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']) delete base[k];
+        return { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(home, 'gitconfig-global') };
+      };
+      const proj = path.join(home, 'proj');
+      fs.mkdirSync(proj, { recursive: true });
+      const inited = spawnSync('git', ['init', '-q'], { cwd: proj, env: gitEnvFor(), encoding: 'utf8' }).status === 0;
+      const render = () => plainText(spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(inlinePayload({ cwd: proj })), encoding: 'utf8', timeout: 20000, cwd: home, env: gitEnvFor(),
+      }).stdout || '');
+      const cacheDir = path.join(home, '.claude', 'cache', 'ampline');
+      const gitEntries = () => { try { return fs.readdirSync(cacheDir).filter((f) => f.startsWith('git_') && f.endsWith('.json')); } catch { return []; } };
+      const marked = (o) => o.includes('✓') || o.includes('●');
+      const index = path.join(proj, '.git', 'index');
+
+      // git rejects a garbage index, so `git status` fails every time, the way a timeout would.
+      fs.writeFileSync(index, 'garbage that is not a git index\n', 'utf8');
+      const first = render();
+      check('a failing git status still renders the branch, without a marker', inited && first.includes('⎇') && !marked(first), JSON.stringify(first));
+      check('the failure is remembered in the cache', gitEntries().length === 1, JSON.stringify(gitEntries()));
+      fs.rmSync(index, { force: true }); // now git would succeed, but the failure is still fresh
+      const second = render();
+      check('within 30 s git is not asked again (no marker, no 400 ms retry)', second.includes('⎇') && !marked(second), JSON.stringify(second));
+      const file = path.join(cacheDir, gitEntries()[0] || 'missing');
+      const old = new Date(Date.now() - 31 * 1000);
+      try { fs.utimesSync(file, old, old); } catch {}
+      const third = render();
+      check('after 30 s the failure expires and git is tried again', marked(third), JSON.stringify(third));
+      check('a success replaces the failure entry', (() => { try { return JSON.parse(fs.readFileSync(file, 'utf8')).dirty === false; } catch { return false; } })(), 'expected the entry to hold a status');
+    } finally {
+      try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -2166,6 +2269,7 @@ function main() {
   runInvisibleCharacterTests();
   runConfigHardeningTests();
   runGitTrustTests();
+  runRobustnessTests();
   runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail });
   runSourceHygieneTests();
 

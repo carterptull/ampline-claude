@@ -272,7 +272,8 @@ More detail:
 
 No. It runs entirely locally, no API calls of any kind. Rendering is a handful of file reads
 and, at most, one cached `git status` call every 5 seconds. Typical render time is a few
-milliseconds. The worst case, a cache miss on a large repo, is capped at 400ms.
+milliseconds. The worst case, a cache miss on a large repo, is capped at 400ms, and a `git status`
+that fails or times out is not retried for 30 seconds, so a slow repo does not pay for it on every render.
 </details>
 
 <details>

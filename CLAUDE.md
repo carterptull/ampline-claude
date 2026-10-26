@@ -57,7 +57,9 @@ lib/
   bar.js                   Block-bar renderer shared by context/fiveHour/weekly. BAR_WIDTH = 8.
                             Optional pace marker (┃) for the usage bars; glyph-only so it survives NO_COLOR.
   cache.js                 Two-tier fresh/stale file cache. Handles the Windows ':' filename bug
-                            and atomic writes (two processes — main + subagent — can race).
+                            (file names are a slug of the key plus a hash of it, so keys that slug
+                            alike never collide) and atomic writes (two processes — main + subagent —
+                            can race).
   safeRead.js              readSmallTextFile(path, maxBytes?) -> string | null. The only way to read
                             a file from a checkout we do not control (.amplinerc.json, .git, HEAD,
                             repo-local git config): regular files of at most 64 KB by default,
@@ -144,7 +146,7 @@ lib/bar.js       renderBar(label, usedPct, opts) -> string | null   opts: {stale
                  BAR_WIDTH
 
 lib/cache.js     read(key) -> {age, value} | null · write(key, value)
-                 remove(key) · prune() · CACHE_DIR
+                 remove(key) · prune() · safeKey(key) · CACHE_DIR
 
 lib/usage.js     resolveUsage(input) -> {fiveHour, weekly, stale} | null   <- SYNCHRONOUS
                  formatCountdown(resetsAtMs) -> string
@@ -214,7 +216,7 @@ non-zero exit from the statusline path, never a partial/garbled line. Specifical
 | Data | Key | Fresh | Stale | Why |
 |---|---|---|---|---|
 | Usage | `usage` | n/a (write-through) | 24h + resets_at rollover check | stdin is authoritative when present; cache only covers cold start |
-| Git state | `git:<gitdir>` | 5s | 60s | one subprocess call; 5s is below human perception for branch/dirty changes |
+| Git state | `git:<gitdir>` | 5s | 60s | one subprocess call; 5s is below human perception for branch/dirty changes. A failed or timed-out call is stored as `{ failed: true }` and not retried for 30s, so a slow repo does not pay the 400ms timeout on every render (a good entry under 60s old is served instead, and kept) |
 | Current task | `task:<session_id>` | 3s | 15s | filesystem I/O; todos don't change faster than this |
 
 ## Diagrams
