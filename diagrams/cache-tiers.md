@@ -138,7 +138,8 @@ timeout until that status ages out. Otherwise the entry is overwritten with `{ "
 the render returns `null` for the state (the branch shows without the sync arrows and the dirty
 marker), and for the next 30 seconds the marker is honored and the subprocess is not run at all.
 After that the call is tried again. A successful call always rewrites the entry, so a repo that
-keeps rendering stays in the Fresh state. See `DECISIONS.md` D20 for why this is the only subprocess.
+keeps rendering stays in the Fresh state. The repository-config trust scan runs before the cache is read, so a repository that fails it neither
+serves nor leaves behind a cache entry. See `DECISIONS.md` D20 for why this is the only subprocess.
 
 **Task has a fresh tier and a nominal stale tier.** Under 3 seconds the cached string is returned,
 and an empty string means "no in-progress todo" and renders nothing. Past that, `readTask()`
@@ -199,4 +200,4 @@ deliberately synchronous. [`../CLAUDE.md`](../CLAUDE.md) flags this and it is no
 See also [`deployment-security.md`](deployment-security.md).
 
 ---
-_Last updated: 2026-10-26 · reflects the unreleased 1.0.0 work_
+_Last updated: 2026-10-26 · reflects v1.0.0_

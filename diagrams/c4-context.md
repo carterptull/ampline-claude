@@ -18,7 +18,7 @@ flowchart LR
         amp["<b>ampline-claude</b><br/>zero-dependency Node program.<br/>JSON on stdin, 1 to 2 lines of ANSI text on stdout"]
     end
 
-    fs[("💾 Local filesystem<br/>~/.claude/settings.json, hooks/, cache/, todos/<br/>.amplinerc.json, .git/HEAD")]
+    fs[("💾 Local filesystem<br/>~/.claude/settings.json, hooks/, cache/, todos/<br/>.amplinerc.json, .git/HEAD, .git/config")]
     git[["git<br/>local binary, one<br/>git status call, 400ms timeout"]]
     npm[["📦 npm registry<br/>serves the package to npx"]]
     gh[["GitHub<br/>source repo, CI, private<br/>vulnerability reporting"]]
@@ -72,4 +72,4 @@ For the pieces inside the box, see [`c4-container.md`](c4-container.md). For the
 version of the whole flow, see [`overview.md`](overview.md).
 
 ---
-_Last updated: 2026-10-07 · reflects v0.6.0_
+_Last updated: 2026-10-26 · reflects v1.0.0_

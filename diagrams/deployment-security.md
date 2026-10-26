@@ -75,7 +75,7 @@ flowchart LR
         own["Own-property lookup<br/>review_state, exact match on pr.kind"]
         gitscan["<b>Repo-config scan</b><br/>skip git status if the repo's own config<br/>has a filter, include or includeIf"]
         gitcall["<b>Constrained git call</b><br/>-c core.fsmonitor= · --no-optional-locks<br/>started at the scanned .git entry · --ignore-submodules=dirty<br/>400ms timeout · no shell"]
-        cfgval["Config validation<br/>segment allowlist, numeric floors"]
+        cfgval["Config validation<br/>segment allowlist, length caps,<br/>bounded regular-file reads"]
     end
 
     out(["stdout<br/>to Claude Code"])
@@ -113,7 +113,7 @@ flowchart LR
 | `--ignore-submodules=dirty` | the same call | `git status` recursing into submodules, whose own config is never scanned. Trade-off: a dirty submodule work tree no longer sets the dirty marker; a moved submodule commit still does |
 | 400ms timeout, argv array, stderr ignored | the same call | A slow or hung `git` blocking a render. There is no shell, so no argument is parsed as a command line |
 | Config validation | `lib/config.js` | A config file naming unknown segments or nonsense numbers. Config is data only, with no path or command keys. The separator is at most 16 code points and the two length settings clamp at 200, with a value under 5 or a non-number falling back to the default (D48) |
-| Bounded, regular-file-only reads (`lib/safeRead.js`) | `.amplinerc.json`, the `.git` file and `HEAD` (64 KB), the repository's own git config (256 KB), stdin (8 million characters: past that nothing renders and the exit code stays 0) | A checkout shipping a symlink to a device or a FIFO, or a huge file, so that a render hangs or floods. The config and git searches each check at most 30 directories (D48) |
+| Bounded, regular-file-only reads (`lib/safeRead.js`) | `.amplinerc.json`, the `.git` file and `HEAD` (64 KB), the repository's own git config (256 KB), stdin (8 Mi characters, 8,388,608: past that nothing renders and the exit code stays 0) | A checkout shipping a symlink to a device or a FIFO, or a huge file, so that a render hangs or floods. The config and git searches each check at most 30 directories (D48) |
 | `stripAnsi()` | width math in `lib/layout.js`, and the whole line when `config.color` is `false` | Wrong wrapping from escape bytes, and any escape (including a link) when color is off. It is not the injection defense on the default path, `sanitize()` is |
 | `NO_COLOR` | `lib/colors.js`, and `lib/segments/pr.js` for links | Color and hyperlink escapes when the user asked for plain text |
 
@@ -143,4 +143,4 @@ terminal control sequences from untrusted input. Problems in Claude Code, `git`,
 CLI are out of scope. See [`../SECURITY.md`](../SECURITY.md).
 
 ---
-_Last updated: 2026-10-26 · reflects the unreleased 1.0.0 work_
+_Last updated: 2026-10-26 · reflects v1.0.0_

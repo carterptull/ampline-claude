@@ -421,7 +421,7 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
     const long = run(home, ['--help']);
     const short = run(home, ['-h']);
     check('--help prints usage that names every documented command',
-      long.status === 0 && long.out.includes('Usage:') && ['--install', 'uninstall', '--version', '--help'].every((w) => long.out.includes(w)), JSON.stringify(long.out.slice(0, 200)));
+      long.status === 0 && long.out.includes('Usage:') && ['--install', 'uninstall', '--uninstall', '-v', '--version', '-h', '--help', '--subagent'].every((w) => long.out.includes(w)), JSON.stringify(long.out.slice(0, 200)));
     check('-h prints the same text as --help', short.status === 0 && short.out === long.out, 'different output');
     check('--help writes nothing to stderr and changes nothing on disk', long.err === '' && !fs.existsSync(settingsPath(home)) && !fs.existsSync(runtimeDir(home)), long.err);
   });

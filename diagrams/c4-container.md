@@ -22,6 +22,7 @@ flowchart TB
     usage["lib/usage.js<br/>rate limits, stdin then cache"]
     cache["lib/cache.js<br/>file cache, atomic writes"]
     claudedir["lib/claudeDir.js<br/>CLAUDE_CONFIG_DIR or ~/.claude"]
+    saferead["lib/safeRead.js<br/>small regular files only"]
     colors["lib/colors.js<br/>wheel, danger ramp, sanitize,<br/>stripAnsi, NO_COLOR"]
 
     bin --> render
@@ -33,6 +34,7 @@ flowchart TB
     render --> segs
     render --> colors
     config --> colors
+    config --> saferead
     layout --> colors
     usage --> cache
     cache --> claudedir
@@ -41,6 +43,7 @@ flowchart TB
     style render fill:transparent,stroke:#BB0000,stroke-width:2px
     style colors fill:transparent,stroke:#888,stroke-width:1px,stroke-dasharray: 3 3
     style claudedir fill:transparent,stroke:#888,stroke-width:1px,stroke-dasharray: 3 3
+    style saferead fill:transparent,stroke:#888,stroke-width:1px,stroke-dasharray: 3 3
 ```
 
 ## Segments and what each one needs
@@ -60,7 +63,10 @@ flowchart LR
     end
 
     bar["lib/bar.js"]
-    usage["lib/usage.js<br/>formatCountdown only"]
+    usage["lib/usage.js<br/>formatCountdown, pace math"]
+    layout["lib/layout.js<br/>visibleWidth only"]
+    config["lib/config.js<br/>MAX_WALK_UP only"]
+    saferead["lib/safeRead.js"]
     cache["lib/cache.js"]
     claudedir["lib/claudeDir.js"]
     colors["lib/colors.js"]
@@ -70,6 +76,9 @@ flowchart LR
     rate --> usage
     bar --> colors
     gitseg --> cache
+    gitseg --> saferead
+    gitseg --> config
+    model --> layout
     task --> cache
     task --> claudedir
 
@@ -93,12 +102,18 @@ every segment, the layout, the config loader, and the bar renderer.
 
 **No segment requires another segment, and none requires `render.js`.** `render.js` calls each
 one with a single `ctx` object holding `input`, `config`, and `usage`, so a segment cannot
-reach for something it was not handed. The one apparent exception is `rateLimits.js` importing
-`formatCountdown` from `usage.js`. It reads the resolved usage from `ctx.usage` and only borrows
-a formatting helper.
+reach for something it was not handed. The apparent exceptions are shared helpers, not other segments: `rateLimits.js` imports
+`formatCountdown` and the pace math from `usage.js` (it reads the resolved usage from `ctx.usage`),
+`model.js` imports `visibleWidth` from `layout.js`, and `git.js` imports the walk-up depth
+(`MAX_WALK_UP`) from `config.js`, so the repository search and the config search stop at the same depth.
 
-**Four segments need nothing but the payload.** `model`, `cost`, and `pr` use only `colors.js`.
-`context` uses only `bar.js`. These never touch the disk, so they cannot be slowed by it.
+**Several segments need nothing but the payload.** `cost` and `pr` use only `colors.js`, `model` adds
+`layout.js` for its width math, and `context` uses only `bar.js`. These never touch the disk, so they
+cannot be slowed by it.
+
+**`safeRead.js` is the one way to read a file from a checkout.** `config.js` and `git.js` read
+`.amplinerc.json`, the `.git` file, `HEAD` and the repository's own git config through it, so only a
+small regular file is ever read (see [`deployment-security.md`](deployment-security.md)).
 
 **Only `git.js` and `task.js` talk to the cache directly.** `usage.js` is the third cache user,
 through `cache.js` on the main diagram. `git.js` also spawns the one `git` subprocess. `task.js`
@@ -123,4 +138,4 @@ When you add a segment or a module, update both diagrams and the module layout i
 [`../CLAUDE.md`](../CLAUDE.md).
 
 ---
-_Last updated: 2026-10-07 · reflects v0.6.0_
+_Last updated: 2026-10-26 · reflects v1.0.0_

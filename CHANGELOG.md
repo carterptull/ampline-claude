@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-26
+
+First stable release. From here the command line, the `.amplinerc.json` keys, the stdin fields it
+reads, the always-exit-0 render path and the subagent output shape follow SemVer. The README's
+**Stability** section says exactly what that covers and what may still change in a minor release
+(glyphs, hex colors, spacing, labels, the tuning of pace coloring and the marker's placement), and `DECISIONS.md` D49 gives
+the reasoning. The `task` segment reads Claude Code's local todo files and is best-effort, and
+everything under `lib/` is internal.
+
 ### Added
 - **A pace marker on the 5-hour and weekly bars.** One cell of the bar becomes `┃` at the point
   of the window that has already elapsed, so quota used and time used read off the same bar.
@@ -20,6 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   See `DECISIONS.md` D40.
 - `elapsedFraction` and `paceRampPct` in `lib/usage.js`, and `opts.marker` / `opts.rampPct` on
   `renderBar`. These are additions to declared interfaces; `resolveUsage` is unchanged.
+- **A Stability section in the README, and a website link.** The README now links the website and
+  live demo at https://ampline.js.org, and `package.json` names it as the homepage. The README
+  documents the command line in one place, and `--help` lists every flag it accepts: `--install`,
+  `uninstall` and `--uninstall`, `-v` and `--version`, `-h` and `--help`, and `--subagent`.
+- **`SECURITY.md` states the git trust boundary and the read limits.** What the `git status` call
+  covers, what it does not (everything else in a repository's own config, global and system config,
+  and the older-git cases), that it is not a sandbox, and the size limits on files and stdin.
 
 ### Changed
 - **`lib/` is now internal: the package declares `exports`.** `package.json` exports only
@@ -27,14 +43,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The `ampline-claude` command, `npx ampline-claude` and `require('ampline-claude/package.json')`
   are unaffected. If you imported a module from `lib/`, it was never a supported interface and
   may change in any release. See `DECISIONS.md` D45.
-- **Known limitations updated for macOS.** v0.7.0 rendering, including the pace marker glyph,
-  is confirmed working on a real Mac, and the marker was also confirmed in a live Claude Code
-  session on Windows. See `DECISIONS.md` D39.
+- **Known limitations updated for macOS.** The pace marker rendering that ships in 1.0.0, including
+  its glyph, is confirmed working on a real Mac, and the marker was also confirmed in a live Claude
+  Code session on Windows. See `DECISIONS.md` D39.
+- **Documentation corrected.** The README no longer compares ampline with other statuslines, says that
+  only the `git status` call is time-limited (file reads are not), describes the config search
+  (30 directories from the session directory, then your home directory) and the clamps on
+  `maxBranchLength`, `maxTaskLength` and `separator`, and states how uninstall behaves when the
+  settings entries are already gone. The package description no longer says "all on one line": the
+  line wraps to two on a narrow terminal.
 - **Copyright is now held by Paymon Software.** The license is still MIT and its terms are
   unchanged; only the copyright holder named in `LICENSE` and the README footer differ.
 
 ### Fixed
-- **A huge or special file, or an oversized config value, no longer floods or hangs the render.** `segments` is deduplicated (nine at most), `separator` is capped at 16 characters, `maxBranchLength` and `maxTaskLength` are floored and clamped at 200 (a value under 5 or one that is not a finite number falls back to the default, 24 and 40), and `.amplinerc.json`, the `.git` file and `HEAD` are read only if they are regular files of at most 64 KB. Input on stdin is capped at 8 million characters (UTF-16 units of the decoded text, about 8 MB for ASCII), past which nothing is rendered and the exit code stays 0.
+- **A huge or special file, or an oversized config value, no longer floods or hangs the render.** `segments` is deduplicated (nine at most), `separator` is capped at 16 characters, `maxBranchLength` and `maxTaskLength` are floored and clamped at 200 (a value under 5 or one that is not a finite number falls back to the default, 24 and 40), and `.amplinerc.json`, the `.git` file and `HEAD` are read only if they are regular files of at most 64 KB. Input on stdin is capped at 8 Mi characters, 8,388,608 (UTF-16 units of the decoded text, about 8 MB for ASCII), past which nothing is rendered and the exit code stays 0.
 - **The subagent status line now uses Claude Code's documented output format.** `--subagent`
   printed bare text rows, but Claude Code expects one JSON line per row, `{"id","content"}`, and
   keeps its own default row for anything else, so the custom rows were most likely never shown.
@@ -249,7 +271,7 @@ each item below.
   command, which could execute arbitrary code on every render for a hostile extracted archive.
   Hardened the invocation with `-c core.fsmonitor=` and `--no-optional-locks`.
   _Correction (2026-10-25): this closed only the fsmonitor path. Filter drivers and includes in a
-  repository's own config were not covered until the `[Unreleased]` Security entry above._
+  repository's own config were not covered until the 1.0.0 Security entry above._
 - Branch names, todo text, and subagent labels truncated near a surrogate pair could render a
   broken `�` character. Truncation now splits on code points, not UTF-16 units.
 - A PR payload shaped like `{ number: null }` rendered a phantom `#0`. `pr.js` now requires a

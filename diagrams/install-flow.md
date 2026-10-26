@@ -205,4 +205,4 @@ removes the runtime copy and cache (unless a foreign entry remains, above) and s
 `settings.json.backup.*` files are left alone.
 
 ---
-_Last updated: 2026-10-26 · reflects the unreleased 1.0.0 work_
+_Last updated: 2026-10-26 · reflects v1.0.0_

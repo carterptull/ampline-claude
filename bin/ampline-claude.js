@@ -7,7 +7,7 @@ const { renderSubagentLine } = require('../lib/segments/subagents');
 // Only guards a stdin stream that never closes; a local pipe delivers in ~1ms.
 const STDIN_TIMEOUT_MS = 500;
 const EXIT_BACKSTOP_MS = 200;
-// A real payload is a few KB. Past 8M characters (UTF-16 units of the decoded input, so about 8 MB
+// A real payload is a few KB. Past 8 Mi (8,388,608) characters (UTF-16 units of the decoded input, so about 8 MB
 // for ASCII) the stream is dropped unread and nothing is rendered (a truncated payload cannot
 // parse anyway); the process still exits 0.
 const MAX_STDIN_CHARS = 8 * 1024 * 1024;
@@ -34,14 +34,17 @@ function printHelp() {
   console.log(`ampline-claude — a zero-dependency statusline for Claude Code
 
 Usage:
-  npx ampline-claude --install    Install into ~/.claude/settings.json
-  npx ampline-claude              Same, but only from an interactive terminal
-  npx ampline-claude uninstall    Remove settings entries, runtime, and cache
-  npx ampline-claude --version    Print version
-  npx ampline-claude --help       This message
+  npx ampline-claude --install      Install into ~/.claude/settings.json
+  npx ampline-claude                Same, but only from an interactive terminal
+  npx ampline-claude uninstall      Remove settings entries, runtime, and cache
+  npx ampline-claude --uninstall    Same as uninstall
+  npx ampline-claude -v, --version  Print version
+  npx ampline-claude -h, --help     This message
 
-When invoked by Claude Code, reads a JSON payload on stdin and prints a
-status line. --subagent renders the subagent panel rows instead.`);
+Claude Code runs the installed copy with a JSON payload on stdin and it prints
+the status line. With --subagent it prints the subagent panel rows instead.
+
+Website and live demo: https://ampline.js.org`);
 }
 
 function main() {

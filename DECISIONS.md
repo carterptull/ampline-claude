@@ -766,8 +766,8 @@ macOS remains unverified, since nothing here ran on macOS hardware. Also unverif
 invokes the hook on Linux (D26 remains open on that specific point) — this pass verified
 the binary's own behavior under controlled invocation, not a live Claude Code session.
 
-**Update (2026-10-14):** v0.7.0 rendering, including the pace marker glyph, was confirmed on
-a real Mac (see D39). That check does not cover the macOS install and uninstall flow, or the
+**Update (2026-10-14):** the pace marker rendering that ships in 1.0.0, including its glyph, was
+confirmed on a real Mac (see D39). That check does not cover the macOS install and uninstall flow, or the
 environment variables a real Claude Code process supplies, so those remain open.
 
 ## Phase 3 — v0.6.0: Haiku 5.5 effort and GitLab merge requests
@@ -855,7 +855,7 @@ needs `glab` authenticated on a machine with a GitLab remote, and has not been d
 GitHub's `gh`-based path is the one verified live (D12). D12's "`gh` required" is also now
 slightly narrower than the truth: Claude Code also accepts `GH_TOKEN` / `GITHUB_TOKEN`.
 
-## Phase 4 — v0.7.0: pace on the usage bars
+## Phase 4 — v1.0.0: pace on the usage bars
 
 ### D39. The usage bars carry a pace marker: one `┃` cell for how much of the window has elapsed
 
@@ -1344,9 +1344,12 @@ and the output.
 - `.amplinerc.json`, a `.git` file and `HEAD` are read only if they are regular files of at most
   64 KB (checked on the path, then again on the open descriptor, which is opened non-blocking where
   the platform has `O_NONBLOCK`). A repository's own git config is read up to 256 KB. A symlink to a
-  device or a FIFO, an oversized file and an unreadable file count as absent, or, for the git config,
-  as untrusted.
-- stdin is read up to 8 million characters (UTF-16 units of the decoded text, about 8 MB for
+  device or a FIFO, an oversized file and an unreadable file are treated as follows: a
+  `.amplinerc.json` is skipped like a missing one (the search continues); a `HEAD`, or a `.git` file
+  that is oversized or unreadable, leaves the git segment out; a `.git` that is neither a file nor a
+  directory is skipped like an absent entry; and for the repository's own git config the file is
+  untrusted, so the `git status` call is skipped.
+- stdin is read up to 8 Mi characters, 8,388,608 (UTF-16 units of the decoded text, about 8 MB for
   ASCII). Past that nothing is rendered and the exit code stays 0.
 - The config search and the git repository search each check at most 30 directories, starting with
   the session directory, and the config search then tries the home directory.
@@ -1383,3 +1386,60 @@ repository's own `.amplinerc.json`, widened to a shared parent directory.
 file against a schema with unknown-key errors (a typo in a hand-written config would blank the
 statusline instead of being ignored); sandboxing the read with a child process (a subprocess per
 render for a display setting).
+
+### D49. The 1.0 stability policy: what is frozen, and what is only described (2026-10-26)
+
+1.0.0 is where "stable" has to mean something specific, because a statusline has two kinds of
+output a person can depend on: the interfaces a program or a config file uses, and the look of the
+line. A promise about all of it would freeze the second kind for no one's benefit, and a promise
+about none of it would make the first kind worthless. D45 already said which modules are not
+public. This entry fixes the rest.
+
+**Decision.** From 1.0.0 the package follows SemVer, and these are the public surface. A breaking
+change to any of them waits for a major release:
+- The command line: `--install`, `uninstall` and `--uninstall`, `--version` and `-v`, `--help` and `-h`,
+  and `--subagent`. Flags are matched anywhere in the arguments and an unknown one is ignored, and
+  that stays. The installer's exit codes (0, or 1 when it cannot complete the install safely) are
+  part of this. Its printed text is not machine-readable and is not part of it.
+- The `.amplinerc.json` keys `segments`, `line2From`, `separator`, `color`, `paceColors` (opt-in,
+  default `false`, D46), `maxBranchLength` and `maxTaskLength`, with their types, defaults and the
+  limits of D48. Unknown keys are ignored. Adding a key is a minor change.
+- The stdin fields the statusline and the subagent line read, as listed in the README. Fields Claude
+  Code adds later are ignored. `resets_at` is epoch seconds; the other forms `usage.js` accepts today
+  (milliseconds, a numeric string, a date string) are tolerance, not a promise, and so are other
+  oddities of input handling.
+- The render path always exits 0. The installer is not a render path.
+- The subagent output: one `{"id","content"}` JSON line per row (D41, confirmed live, D47).
+
+The rules the README states are behavior, so they are frozen too: bold only at the `max` effort
+(color is identity, bold is urgency), usage bars bold from 85% and the warning
+glyph from 95%, and pace, meaning the marker and `paceColors`, never adding bold or the warning
+glyph. What stays free to change in a minor release is how the rules are drawn: the exact glyphs,
+hex colors, spacing and segment labels, the tuning of pace coloring (its 10% dead zone, its cap at
+84 and its projection, D46), and the marker's placement.
+
+Outside the promise: the `task` segment, because it reads Claude Code's todo files, an
+undocumented convention (D47), so it is best-effort; everything under `lib/` (D45); the statusline
+text as a data format; and the installer's output.
+
+**Why.** The surfaces in the first list are what scripts, dotfiles and other people's configs bind
+to, and each can be tested without looking at a screen. The look of the line is something a
+person re-reads on every render and can adapt to in a second, and the project needs room to correct
+a hex value that reads badly on a light terminal or a glyph that a font renders wide. The rules are
+different from the pixels: "bold means urgent" is the thing a user learns once and relies on, so it
+is the one part of the look that is held.
+
+**Alternatives considered:**
+- *Freeze everything, including exact output.* A byte-for-byte promise on the line would turn every
+  palette or spacing fix into a major release, and the only people it protects are those who parse
+  a line that was never meant to be parsed. The README's tables of hex values stay descriptive of
+  the current release.
+- *Freeze nothing and stay on 0.x.* It avoids a promise, but it leaves the people with a config file
+  or an install script without one, for a tool whose surface has been small and stable for several
+  releases.
+- *Mark `paceColors` unstable or experimental.* It is a documented, tested, opt-in key whose meaning
+  is simple ("may raise a bar's color, never lower it, never bold"). Only its tuning is unsettled,
+  and that is already carved out (D46), so the key itself can be frozen without freezing the numbers.
+- *Freeze the module layout under `lib/`.* Rejected in D45.
+
+**Not verified:** whether anyone parses the statusline text today. The policy is that nobody should.

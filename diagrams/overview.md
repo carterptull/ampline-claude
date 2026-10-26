@@ -87,4 +87,4 @@ runs code out of the npm cache. See [`install-flow.md`](install-flow.md).
 | How does code reach users, and where are the trust boundaries? | [`deployment-security.md`](deployment-security.md) |
 
 ---
-_Last updated: 2026-10-07 · reflects v0.6.0_
+_Last updated: 2026-10-26 · reflects v1.0.0_

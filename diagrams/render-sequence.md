@@ -18,7 +18,7 @@ sequenceDiagram
 
     CC->>B: spawn with JSON payload piped to stdin
     Note over B: argv is checked first<br/>--help, --version, --install, uninstall go elsewhere<br/>a TTY on stdin runs the installer
-    B->>B: collect stdin chunks until end, error or the 500ms timer
+    B->>B: collect stdin chunks until end, error, the 500ms timer<br/>or 8 Mi characters, 8,388,608 (then nothing is rendered)
     B->>B: JSON.parse, null on bad or empty input
     B->>R: renderStatusline(data)
     R->>CF: loadConfig(workspace.current_dir, else cwd)
@@ -103,4 +103,4 @@ facts are D2 to D5. The synchronous filesystem reads that have no ceiling are li
 gap in CLAUDE.md.
 
 ---
-_Last updated: 2026-10-07 · reflects v0.6.0_
+_Last updated: 2026-10-26 · reflects v1.0.0_
