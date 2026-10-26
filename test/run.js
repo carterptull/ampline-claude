@@ -1743,11 +1743,20 @@ function runGitTrustTests() {
   check('a leading byte order mark does not hide a header', bad(String.fromCharCode(0xFEFF) + '[filter "x"]\n') === true, 'expected true');
   check('a header after another header on one line is flagged', bad('[core][filter "x"]\n') === true, 'expected true');
   check('a header with a trailing comment is flagged', bad('[filter "x"] # note\n') === true && bad('[include] ; note\n') === true, 'expected true');
-  check('commented-out headers do not count', bad('# [filter "x"]\n; [include]\n[core]\n') === false, 'expected false');
+  // Belt and braces: any "[" followed by filter or include anywhere in the text is untrusted, even in
+  // a comment or a value. These false positives are accepted and documented; the cost is a missing marker.
+  check('commented-out headers are flagged too (documented false positive)', bad('# [filter "x"]\n; [include]\n[core]\n') === true, 'expected true');
+  check('comments that merely mention the words do not count', bad('# we use a filter and an include elsewhere\n[core]\n') === false, 'expected false');
+  check('a legacy dotted base followed by a quoted subsection containing "]" and another header is flagged',
+    bad('[section.sub "quoted]text"][filter "name"]\n') === true && bad('[section.sub "quoted]text"] [include]\n') === true, 'expected true');
+  check('a dotted base followed by a quoted subsection is read like git reads it',
+    bad('[remote.origin "a b"]\n\turl = x\n') === false && bad('[branch.main]\n') === false, 'expected false');
+  check('the belt-and-braces rule sees through whitespace and case', bad('[core]\n\tx = [ \tFILTER\n') === true && bad('x [Include') === true, 'expected true');
   check('the words in keys, values and other sections do not count',
     bad('[alias]\n\tfilter = log\n\tinclude = status\n[core]\n\tattributesfile = filter.txt\n[user]\n\tname = include\n[remote "filter"]\n\turl = x\n[branch "include"]\n') === false, 'expected false');
-  check('similar section names do not count', bad('[filters]\n[includes]\n[includeIfs]\n[myfilter]\n') === false, 'expected false');
-  check('keys that mimic a header do not count', bad('[core]\n\tname = [filter "x"]\n') === false, 'expected false');
+  check('similar section names do not count unless they start with filter or include',
+    bad('[myfilter]\n[core]\n') === false && bad('[filters]\n') === true && bad('[includes]\n') === true, 'expected false/true/true');
+  check('values that mimic a header are flagged (documented false positive)', bad('[core]\n\tname = [filter "x"]\n') === true, 'expected true');
   check('an unterminated header is untrusted', bad('[core\n') === true && bad('[filter "x"\n') === true && bad('[') === true, 'expected true');
   check('an unterminated quote in a header is untrusted', bad('[remote "origin]\n') === true, 'expected true');
   check('a malformed header is untrusted', bad('[]\n') === true && bad('[ "x" ]\n') === true && bad('[core!]\n') === true, 'expected true');
@@ -1756,10 +1765,18 @@ function runGitTrustTests() {
 
   // ---- through the real binary, in real throwaway repositories ----
   const gitEnv = (home) => {
+    // Nothing from the developer's environment may steer git: every GIT_* variable and
+    // XDG_CONFIG_HOME is dropped, then global config is pointed inside the throwaway home.
     const base = { ...process.env };
-    for (const k of ['NO_COLOR', 'FORCE_COLOR', 'CLAUDE_CONFIG_DIR', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM']) delete base[k];
-    return { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200', GIT_CONFIG_NOSYSTEM: '1' };
+    for (const k of Object.keys(base)) if (k.startsWith('GIT_')) delete base[k];
+    for (const k of ['NO_COLOR', 'FORCE_COLOR', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']) delete base[k];
+    return {
+      ...base, HOME: home, USERPROFILE: home, COLUMNS: '200',
+      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(home, 'gitconfig-global'),
+    };
   };
+  // A missing git binary fails the suite on purpose: CI has git, and a silent skip would let the
+  // trust-boundary tests vanish without anyone noticing.
   const probe = spawnSync('git', ['--version'], { encoding: 'utf8' });
   if (probe.error || probe.status !== 0) {
     check('git is available to run the repository tests', false, 'the git binary is needed for these tests');
@@ -1781,10 +1798,15 @@ function runGitTrustTests() {
       const result = setup(home, proj);
       if (result === false) setupOk = false;
       const cwd = (result && result.cwd) || proj;
-      const res = spawnSync(process.execPath, [BIN], {
-        input: JSON.stringify(inlinePayload({ cwd })), encoding: 'utf8', timeout: 20000, cwd: home, env: gitEnv(home),
-      });
-      out = String(res.stdout || '').replace(/\x1b\[[0-9;]*m/g, '');
+      // Rendered twice, outputs joined: the first `git status` can be slow on a cold machine and a
+      // timeout writes no cache, so a marker on either render counts. A skipped repo must show no
+      // marker on either.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const res = spawnSync(process.execPath, [BIN], {
+          input: JSON.stringify(inlinePayload({ cwd })), encoding: 'utf8', timeout: 20000, cwd: home, env: gitEnv(home),
+        });
+        out += String(res.stdout || '').replace(/\x1b\[[0-9;]*m/g, '') + '\n';
+      }
       try { cacheFiles = fs.readdirSync(path.join(home, '.claude', 'cache', 'ampline')).filter((f) => f.startsWith('git_')); } catch {}
     } finally {
       try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
@@ -1837,6 +1859,118 @@ function runGitTrustTests() {
   check('a filter section in the common directory config skips the call in a linked worktree',
     linkedBad.setupOk && linkedBad.out.includes('⎇ linked') && !hasMarker(linkedBad.out) && linkedBad.cacheFiles.length === 0,
     JSON.stringify([linkedBad.out, linkedBad.cacheFiles]));
+
+  // ---- git must read exactly the repository that was scanned ----
+  const id = ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false'];
+  const commitFile = (home, proj) => {
+    fs.writeFileSync(path.join(proj, 'tracked.txt'), 'one\n', 'utf8');
+    return runGit(home, proj, ['add', 'tracked.txt']).status === 0
+      && runGit(home, proj, [...id, 'commit', '-q', '-m', 'x']).status === 0;
+  };
+  const sub = scenario((home, proj) => {
+    if (!commitFile(home, proj)) return false;
+    fs.writeFileSync(path.join(proj, 'tracked.txt'), 'two\n', 'utf8');
+    const deep = path.join(proj, 'sub', 'deeper');
+    fs.mkdirSync(deep, { recursive: true });
+    return { cwd: deep };
+  });
+  check('control: a subdirectory cwd still gets the right (dirty) marker with git pinned to the repository',
+    sub.setupOk && sub.out.includes('●'), JSON.stringify(sub.out));
+  const gitfileOk = scenario((home, proj) => {
+    const moved = path.join(proj, 'real git dir');
+    fs.renameSync(path.join(proj, '.git'), moved);
+    fs.writeFileSync(path.join(proj, '.git'), 'gitdir: real git dir\n', 'utf8');
+    return runGit(home, proj, ['status', '--porcelain']).status === 0 ? undefined : false;
+  });
+  check('control: a plain .git file with a path containing spaces still gets a marker',
+    gitfileOk.setupOk && gitfileOk.out.includes('⎇') && hasMarker(gitfileOk.out) && gitfileOk.cacheFiles.length === 1, JSON.stringify([gitfileOk.out, gitfileOk.cacheFiles]));
+
+  // Divergence cases: ampline and git must not disagree about which files make up the repository.
+  const divergent = (label, setup, branchShown = true) => {
+    const r = scenario(setup);
+    check(label + ': git itself accepts the layout (the test is not vacuous)', r.setupOk, JSON.stringify(r.out));
+    check(label + ': no marker is shown', !hasMarker(r.out) && (!branchShown || r.out.includes('⎇')), JSON.stringify(r.out));
+    check(label + ': no git cache entry is written', r.cacheFiles.length === 0, JSON.stringify(r.cacheFiles));
+  };
+  // A copy of the repository's git dir that carries a harmless no-op filter section.
+  const copyWithFilter = (from, to) => {
+    fs.cpSync(from, to, { recursive: true, filter: (src) => path.basename(src) !== 'worktrees' });
+    fs.appendFileSync(path.join(to, 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+  };
+  divergent('a commondir with a leading space (git reads "<gitdir>/ common", a trimmed path would read "<gitdir>/common")', (home, proj) => {
+    if (runGit(home, proj, [...id, 'commit', '-q', '--allow-empty', '-m', 'x']).status !== 0) return false;
+    const wt = path.join(home, 'wt');
+    if (runGit(home, proj, ['worktree', 'add', '-q', '-b', 'linked', wt]).status !== 0) return false;
+    const staging = path.join(home, 'common-copy');
+    copyWithFilter(path.join(proj, '.git'), staging);
+    const wtGit = path.join(proj, '.git', 'worktrees', 'wt');
+    fs.renameSync(staging, path.join(wtGit, ' common'));
+    fs.writeFileSync(path.join(wtGit, 'commondir'), ' common\n', 'utf8');
+    return runGit(home, wt, ['status', '--porcelain']).status === 0 ? { cwd: wt } : false;
+  });
+  divergent('a .git file with an extra leading space after "gitdir:" (git reads " g")', (home, proj) => {
+    fs.renameSync(path.join(proj, '.git'), path.join(proj, 'g'));
+    copyWithFilter(path.join(proj, 'g'), path.join(proj, ' g'));
+    fs.writeFileSync(path.join(proj, '.git'), 'gitdir:  g\n', 'utf8');
+    return runGit(home, proj, ['status', '--porcelain']).status === 0 ? undefined : false;
+  });
+  // Defense in depth: a bare-looking directory between the cwd and the repository is never inspected.
+  const embedded = scenario((home, proj) => {
+    const inner = path.join(proj, 'inner');
+    fs.mkdirSync(inner);
+    if (runGit(home, inner, ['init', '-q', '--bare', '.']).status !== 0) return false;
+    fs.appendFileSync(path.join(inner, 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+    return { cwd: inner };
+  });
+  check('an embedded bare directory under a clean outer repository: the branch renders, no marker, no cache entry',
+    embedded.setupOk && embedded.out.includes('⎇') && !hasMarker(embedded.out) && embedded.cacheFiles.length === 0, JSON.stringify([embedded.out, embedded.cacheFiles]));
+
+  // ---- the exact command line (submodules, locks, discovery) ----
+  if (typeof git.buildStatusArgs !== 'function') {
+    fail('git trust boundary: buildStatusArgs export', 'buildStatusArgs must be exported from lib/segments/git.js');
+  } else {
+    const args = git.buildStatusArgs(path.join(os.tmpdir(), 'a b', '.git'), path.join(os.tmpdir(), 'a b'));
+    const at = (flag) => args.indexOf(flag);
+    check('the status call ignores dirty submodules (their own config is never scanned)', args.includes('--ignore-submodules=dirty'), JSON.stringify(args));
+    check('the status call overrides fsmonitor, forbids implicit bare repositories and takes no optional locks',
+      args.includes('core.fsmonitor=') && args.includes('safe.bareRepository=explicit') && args.includes('--no-optional-locks'), JSON.stringify(args));
+    check('the status call is pinned to the scanned git dir and work tree, as separate arguments, before the subcommand',
+      args.includes('--git-dir=' + path.join(os.tmpdir(), 'a b', '.git')) && args.includes('--work-tree=' + path.join(os.tmpdir(), 'a b'))
+      && at('--git-dir=' + path.join(os.tmpdir(), 'a b', '.git')) < at('status') && at('--work-tree=' + path.join(os.tmpdir(), 'a b')) < at('status'), JSON.stringify(args));
+  }
+
+  // ---- repoConfigIsTrusted on hand-built git dirs ----
+  const trustDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-trust-'));
+  try {
+    const gd = (name, files) => {
+      const dir = path.join(trustDir, name);
+      fs.mkdirSync(dir, { recursive: true });
+      for (const [f, content] of Object.entries(files)) {
+        if (content === null) fs.mkdirSync(path.join(dir, f), { recursive: true });
+        else fs.writeFileSync(path.join(dir, f), content, 'utf8');
+      }
+      return dir;
+    };
+    const trusted = git.repoConfigIsTrusted;
+    check('a git dir with a plain config is trusted', trusted(gd('plain', { config: plainCfg })) === true, 'expected true');
+    check('a git dir with no config file is trusted', trusted(gd('noconfig', { HEAD: 'ref: refs/heads/main\n' })) === true, 'expected true');
+    check('a config that is a directory is untrusted', trusted(gd('cfgdir', { config: null })) === false, 'expected false');
+    check('a config.worktree that is a directory is untrusted', trusted(gd('wtdir', { config: plainCfg, 'config.worktree': null })) === false, 'expected false');
+    fs.mkdirSync(path.join(trustDir, 'common'));
+    fs.writeFileSync(path.join(trustDir, 'common', 'config'), plainCfg, 'utf8');
+    const withCommon = (name, text) => trusted(gd(name, { config: plainCfg, commondir: text }));
+    check('a commondir written the way git writes it (one trailing newline) is followed', withCommon('cd-ok', '../common\n') === true, 'expected true');
+    check('a commondir without a trailing newline is followed', withCommon('cd-nonl', '../common') === true, 'expected true');
+    check('a commondir with leading whitespace is untrusted', withCommon('cd-lead', ' ../common\n') === false, 'expected false');
+    check('a commondir with trailing whitespace is untrusted', withCommon('cd-trail', '../common \n') === false, 'expected false');
+    check('a commondir with a carriage return is untrusted', withCommon('cd-cr', '../common\r\n') === false, 'expected false');
+    check('a commondir with an embedded newline is untrusted', withCommon('cd-nl', '../common\nx\n') === false, 'expected false');
+    check('an empty commondir is untrusted', withCommon('cd-empty', '') === false && withCommon('cd-empty2', '\n') === false, 'expected false');
+    check('a commondir that points at a config with a filter is untrusted',
+      (() => { gd('common-bad', { config: '[filter "x"]\n' }); return withCommon('cd-bad', '../common-bad\n'); })() === false, 'expected false');
+  } finally {
+    try { fs.rmSync(trustDir, { recursive: true, force: true }); } catch {}
+  }
 }
 
 function main() {
