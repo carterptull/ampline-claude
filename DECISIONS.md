@@ -954,8 +954,8 @@ use shows what the right number is.
 - *De-escalating when little time is left.* Not possible with a projection (see above). A
   different rule would be needed and nobody has asked for one.
 - *Uncapped.* See the cap above.
-- *Default on.* It changes colors people already see. It ships off, and the default is to be
-  revisited in v0.8.0 after real use.
+- *Default on.* It changes colors people already see. It ships off. The default is fixed at
+  `false` for 1.0 (D46).
 - *Applying it to the context bar.* Context is not a time window, so there is no elapsed
   fraction to project from.
 - *A separate hue for "projected".* That would blend the identity and urgency scales, which
@@ -981,8 +981,9 @@ The OUTPUT format was never checked against Claude Code. Claude Code's documenta
 ("Subagent status lines" on the statusline page) says the command writes one JSON line per
 row, `{"id": "<task id>", "content": "<row body>"}`, with the task's `id` echoed, and that a
 row with no `id` keeps the default rendering. Under that contract the bare text rows carried
-no id and were most likely ignored, so `subagentStatusLine` would have changed nothing. It was
-found by comparing against another statusline's implementation, not by a test or a report.
+no id and were most likely ignored, so `subagentStatusLine` would have changed nothing. No
+test or report had caught it: the output side was written from the plan and never checked
+against the documentation.
 
 **Decision:** `renderSubagentLine` emits `JSON.stringify({ id, content }) + "\n"` for each task
 whose `id` is a non-empty string, and nothing for any other task, which keeps Claude Code's
@@ -1019,6 +1020,10 @@ the omission rules, hostile labels and `NO_COLOR`. **Not verified live:** that C
 renders these rows in the agent panel. This is to be amended after that check. Also unknown is
 which Claude Code version introduced the JSON contract, so a user on a much older version may
 see a difference.
+
+**Follow-up (2026-10-25).** The maintainer, Carter, confirmed in a live Claude Code session that
+the `{"id","content"}` rows render in the agent panel. That settles the "not verified live" item
+above; the unknown about which Claude Code version introduced the JSON contract stands.
 
 ### D42. Values from outside are type- and range-checked, not only sanitized
 
@@ -1096,6 +1101,13 @@ bound), so they are mutated together. **Not covered, and handled separately:** b
 override and zero-width characters, which `sanitize()` does not strip, and the width of
 characters outside the old wide-character ranges. The suite is also green with `NO_COLOR`
 exported in the developer's shell.
+
+**Follow-up (2026-10-26), compatibility policy for the `task` segment.** The `task` segment reads
+Claude Code's local todo files, and where those live is an undocumented convention, not a
+documented interface of Claude Code. It is therefore best-effort and outside ampline's
+compatibility promise: if Claude Code moves or reshapes the files, the segment may render
+nothing (it already returns null instead of throwing) and that is not a breaking change in
+ampline. This is a policy, not something that was verified.
 
 ### D43. `sanitize()` also strips bidirectional and invisible characters, and cell width counts them right
 
@@ -1219,3 +1231,75 @@ directory's own ancestors first.
 
 **Not verified:** Homebrew, nvm-windows and the other version managers were exercised only through
 injected paths. No Mac was available, as for D27.
+
+### D45. `package.json` declares `exports`: `lib/` is internal, only `package.json` is importable
+
+Until now every file under `lib/` could be required by path (`require('ampline-claude/lib/colors')`),
+which made each module look like public API. The only public surface ampline will freeze at 1.0 is
+the command line, the `.amplinerc.json` keys, the stdin fields it reads, the exit code of the render
+path and the subagent `{"id","content"}` lines. Module paths, function signatures, exact glyphs, hex
+colors, spacing and labels are not part of it. The "Frozen module interfaces" in `CLAUDE.md` are
+frozen for contributors, not for importers.
+
+**Decision:** add `"exports": { "./package.json": "./package.json" }` and keep `main` absent (D29).
+With an `exports` field Node refuses any path not listed, so `require('ampline-claude/lib/...')` and
+`require('ampline-claude')` now throw `ERR_PACKAGE_PATH_NOT_EXPORTED`. `package.json` is exported because tools read it
+(`require('ampline-claude/package.json').version`) and because bundlers and some package managers
+look for it.
+
+**`bin` is unaffected.** `exports` governs how a package specifier is resolved by `require` and
+`import`. The `bin` entry is a file path that npm links or `npx` runs directly, and the file's own
+relative requires (`../lib/...`) are ordinary file paths too, so `npx ampline-claude`, the installed
+`ampline-claude` command, and the statusline command the installer writes keep working. The
+installer's command is `node <dir>/hooks/ampline-claude/bin/ampline-claude.js`, a file path.
+
+**The sister website is not affected.** Its sync script reads `node_modules/ampline-claude/lib/*.js`
+and `package.json` from disk with `readFileSync` and wraps them itself; it never `require`s or
+`import`s the package by name, so `exports` does not apply to it. That arrangement is why `lib/` stays
+a flat set of files with CommonJS source that can be copied verbatim.
+
+**Tests.** `test/run.js` copies the files npm would ship (the `files` allowlist) into
+`node_modules/ampline-claude` under a throwaway directory and resolves the package from a consumer
+there: `package.json` still loads, `lib/` and `bin/` package paths are refused with
+`ERR_PACKAGE_PATH_NOT_EXPORTED`, and the copied CLI still prints `--version` and renders a
+statusline. `scripts/verify-pack.js` asserts the field exists, lists only `./package.json`, and that
+there is still no `main`.
+
+**Rejected:**
+- *Leaving `lib/` importable and saying "unsupported" in the docs.* A path that works is a path
+  somebody depends on; only the field makes "internal" true.
+- *Exporting `lib/*` for convenience.* That is the surface this decision removes.
+- *Adding a `main` with a small programmatic API.* Nobody asked for one, and every export is a
+  commitment at 1.0 (see D29 for why `main` was dropped).
+
+### D46. `paceColors` stays opt-in with default `false` for 1.0; its tuning is not part of the contract
+
+D40 shipped `paceColors` off and left the default "to be revisited in v0.8.0 after real use". 1.0 is
+the point where the default is frozen, so the question has to be closed.
+
+**Decision:** the default stays `false`. `"paceColors": true` remains a recognized `.amplinerc.json`
+key and its meaning is stable: the 5-hour and weekly bars may be colored by projected pace, never
+calmer than the plain ramp. What is **not** part of the contract is how the projection is
+tuned: the 10% deadband, the cap at 84, and the straight-line projection itself can change in a
+minor release, because they are tuning of an opt-in color choice and the soft spot D40 describes
+(8% used at 11% elapsed on the weekly bar reads orange) has had no live-use evidence either way.
+
+**Why not default on.** It changes colors that people already see, and the usefulness of the
+signal has not been shown. Opt-in costs nothing: people who want it set one key.
+
+**Why not remove it.** It is documented, covered by tests and a mutation matrix, and harmless when
+off. Removing a key is the kind of change 1.0 is meant to make rarer.
+
+**Not verified:** whether the signal is useful or noisy in live work, as in D40.
+
+### D47. What the maintainer has confirmed live, and which inputs are best-effort (2026-10-25)
+
+Recorded as the maintainer's confirmations, not as results of this repository's tests:
+
+- On 2026-10-25 Carter confirmed that the subagent `{"id","content"}` rows render in a live Claude
+  Code session (see the D41 follow-up).
+- On the same date Carter confirmed that `main` renders correctly on a real Mac and on Windows.
+  This extends D39's and D40's earlier "not yet verified" notes for macOS terminals and fonts; it
+  does not cover a terminal or font Carter did not name.
+- The `task` segment's input, Claude Code's local todo files, is an undocumented convention. It is
+  best-effort and outside the compatibility promise (see the D42 follow-up).
