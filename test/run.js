@@ -1942,6 +1942,14 @@ function runGitTrustTests() {
     check(label + ': no git cache entry is written', r.cacheFiles.length === 0, JSON.stringify(r.cacheFiles));
   };
   skipped('a filter section in the repository config', (home, proj) => { append(proj, '[filter "noop"]\n\tclean = cat\n\tsmudge = cat\n'); });
+  // A commondir whose text is "absent" names <gitdir>/absent; git reads that directory's config.
+  skipped('a commondir that says "absent", with a filter in <gitdir>/absent/config', (home, proj) => {
+    const common = path.join(proj, '.git', 'absent');
+    fs.mkdirSync(path.join(common, 'objects'), { recursive: true });
+    fs.mkdirSync(path.join(common, 'refs'));
+    fs.writeFileSync(path.join(common, 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+    fs.writeFileSync(path.join(proj, '.git', 'commondir'), 'absent', 'utf8');
+  });
   skipped('an include section in the repository config', (home, proj) => {
     fs.writeFileSync(path.join(proj, '.git', 'extra.cfg'), '# nothing here\n', 'utf8');
     append(proj, '[include]\n\tpath = extra.cfg\n');
@@ -2185,6 +2193,8 @@ function runGitTrustTests() {
       const A40 = 'a'.repeat(40);
       const headCases = [
         [' ref: refs/heads/x\n', false], ['\nref: refs/heads/x\n', false], ['ref: refs/heads/x', true], ['ref:refs/heads/x\n', true],
+        // Git's whitespace after "ref:" is space, tab, newline and carriage return, not JS's \s.
+        ['ref:\trefs/heads/x\n', true], ['ref:\vrefs/heads/x\n', false], ['ref: refs/heads/x\n', false], ['ref:\frefs/heads/x\n', false],
         ['ref: heads/x\n', false], [' ' + A40 + '\n', false], [A40 + '\n', true], ['a'.repeat(64) + '\n', true], ['a'.repeat(39) + '\n', false],
       ];
       const headResults = headCases.map(([text]) => {
@@ -2324,6 +2334,29 @@ function runGitTrustTests() {
     seen.length = 0;
     trusted(absGit, { realpath: realpathTo(path.join(trustDir, 'common')) });
     check('an absolute commondir is passed to realpath as given', seen.length === 1 && seen[0] === path.join(trustDir, 'common'), JSON.stringify(seen));
+
+    // File content must never be mistaken for the reader's own "no such file" or "unusable file"
+    // answers: a commondir that says "absent" names the directory <gitdir>/absent, whose config git
+    // reads and ampline must therefore scan.
+    const named = (name, commondirText, configText) => {
+      const dir = gd(name, { config: plainCfg, commondir: commondirText, [commondirText.trim()]: null });
+      fs.writeFileSync(path.join(dir, commondirText.trim(), 'config'), configText, 'utf8');
+      return trusted(dir);
+    };
+    const filterCfg = '[filter "x"]\n\tclean = cat\n';
+    check('control: a commondir naming a directory with a plain config is trusted (the right directory is read)',
+      named('cd-named-ok', 'named', plainCfg) === true, 'expected true');
+    check('a commondir that says "absent" is followed: a filter in <gitdir>/absent/config is untrusted',
+      named('cd-absent', 'absent', filterCfg) === false && named('cd-absent-nl', 'absent\n', filterCfg) === false, 'expected false');
+    check('a commondir that says "bad" is followed: a filter in <gitdir>/bad/config is untrusted',
+      named('cd-badword', 'bad', filterCfg) === false && named('cd-badword-ok', 'bad', plainCfg) === true, 'expected false then true');
+    check('a commondir that says "absent" with no such directory is untrusted, not "no commondir"',
+      withCommon('cd-absent-missing', 'absent') === false, 'expected false');
+    // A config file whose whole text is "absent" or "bad" is just text: it defines no section, and
+    // git itself refuses it, so nothing runs.
+    check('a config file whose text is exactly "absent" or "bad" is scanned as text, not as a missing or unusable file',
+      trusted(gd('cfg-absent', { config: 'absent' })) === true && trusted(gd('cfg-bad', { config: 'bad' })) === true
+        && trusted(gd('cfg-bad-filter', { config: 'bad\n[filter "x"]\n' })) === false, 'expected true, true, false');
   } finally {
     try { fs.rmSync(trustDir, { recursive: true, force: true }); } catch {}
   }

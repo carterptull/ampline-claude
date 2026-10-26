@@ -586,12 +586,15 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
       // Interpreters the installer can write: Debian's nodejs, versioned binaries, nodejs.exe.
       `"/usr/bin/nodejs" "${e}"`, `"/usr/bin/nodejs" "${e}" --subagent`, `"/usr/local/bin/node24" "${e}"`,
       `"/opt/node/bin/node-24.1" "${e}" --subagent`, `"C:/Program Files/nodejs/nodejs.exe" "${e}"`,
+      `"/opt/node/bin/node-v24.1.0" "${e}"`, `"/usr/bin/node24.exe" "${e}"`, `"/usr/bin/NODE" "${e}"`,
     ];
     const no = [
       '~/bin/ampline-claude-wrap.sh', '~/bin/ampline-claude-wrap.sh --subagent', 'bash ampline-claude.sh', 'npx ampline-claude',
       `node "${e}" --other-flag`, `node "${e}"; rm -rf ~`, `node "${e}" && echo hi`, `echo "${e}"`,
       `node "/x/hooks/ampline-claude/bin/ampline-claude.js.bak"`, `node "/x/hooks/ampline-claude-two/bin/ampline-claude.js"`, '', 'ampline-claude',
       `node-wrapper.sh "${e}"`, `nodemon "${e}"`, `"/usr/bin/nodes" "${e}"`, `"/opt/mynode" "${e}"`, `"/usr/bin/node.sh" "${e}"`,
+      `"/usr/bin/node2-wrapper.sh" "${e}"`, `"/usr/bin/node1.sh" "${e}"`, `"/usr/bin/node24.cmd" "${e}"`, `"/usr/bin/node-v24-evil" "${e}"`,
+      `"/usr/bin/node-24.x" "${e}"`, `"/usr/bin/node24-wrapper" "${e}"`,
     ];
     check('pointsAtUs accepts the exact command shapes the installer writes', yes.every((c) => pointsAtUs({ command: c })), JSON.stringify(yes.filter((c) => !pointsAtUs({ command: c }))));
     check('pointsAtUs rejects wrappers, other flags, chained commands and look-alike paths', no.every((c) => !pointsAtUs({ command: c })), JSON.stringify(no.filter((c) => pointsAtUs({ command: c }))));
