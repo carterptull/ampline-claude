@@ -81,10 +81,13 @@ normal install prints the same six lines as v0.6.0. `refreshInterval: 30` is the
 reset countdown and git state go stale while Claude Code is idle (`DECISIONS.md` D33).
 
 **Which commands are ours.** An entry is ours only if its command is a node interpreter (bare,
-or an absolute path to `node`, `nodejs`, a versioned name such as `node24`, with an optional
-`.exe`) followed by the quoted `<dir>/hooks/ampline-claude/bin/ampline-claude.js`, with or without
-`--subagent` (`pointsAtUs`). A command that only mentions the name, such as a user's
-`ampline-claude-wrap.sh`, is foreign.
+or an absolute path to `node`, `nodejs`, or a versioned name such as `node24`, `node-24.1` or
+`node-v24.1.0`, with an optional `.exe` and nothing else after the name) followed by the quoted
+`<dir>/hooks/ampline-claude/bin/ampline-claude.js`, with or without `--subagent` (`pointsAtUs`).
+The file name of the Node that is running the installer is accepted too, because that is what
+install writes when nothing better is found, whatever it is called. A command that only mentions
+the name, such as a user's `ampline-claude-wrap.sh`, or whose interpreter is a wrapper such as
+`node2-wrapper.sh` or `node24.cmd`, is foreign.
 
 **Foreign entries.** A `statusLine` or a `subagentStatusLine` that is not ours is replaced
 after a notice that shows the old command, and the backup taken first holds it. Everything else in

@@ -455,7 +455,8 @@ What this does and does not block, stated precisely:
   working because it is not repo-local).
 - Older git, accepted residuals: before git 2.39.4/2.45.1 (depending on the release series)
   `GIT_NO_LAZY_FETCH` is ignored, so a partial clone can fetch from its remote during the status
-  call; before 2.38 `safe.bareRepository` is ignored. Neither is detected by running
+  call, and a lazy fetch can run the transport the repository's own config names (a remote URL
+  with a helper, `core.sshCommand` and the like), which the scan does not cover; before 2.38 `safe.bareRepository` is ignored. Neither is detected by running
   `git --version` on every render (a second subprocess). Treating `partialclone` and `promisor`
   as untrusted in the scan was considered and not done: a partial clone is a normal repository
   and plenty of people use one, so it would hide the marker for them, and the new gits already
@@ -1184,8 +1185,10 @@ four ways it could do the wrong thing quietly, and that nothing tested it.
 - **Which commands are ours.** `pointsAtUs` accepted any command that contained
   `ampline-claude`, so a user's `~/bin/ampline-claude-wrap.sh` was deleted by uninstall and
   replaced by install without a notice. It now accepts only a node interpreter (bare, or an
-  absolute path to a file named `node`, `node.exe`, `nodejs` or a versioned name such as `node24`;
-  the name of the running Node is accepted too, since that is what install writes) followed by the quoted installed entry,
+  absolute path to a file named `node`, `nodejs` or a versioned name such as `node24`, `node-24.1`
+  or `node-v24.1.0`, with an optional `.exe`, and nothing else after the name, so
+  `node2-wrapper.sh` and `node24.cmd` are foreign; the file name of the running Node is accepted
+  too, since that is what install writes) followed by the quoted installed entry,
   `<dir>/hooks/ampline-claude/bin/ampline-claude.js`, with or without `--subagent`; the
   README's manual-install shape matches. Anything else is foreign. Install announces a foreign
   entry (now for `subagentStatusLine` as well as `statusLine`) and replaces it after a backup.
@@ -1335,14 +1338,16 @@ and the output.
 **Decision:**
 - `separator` is cut to 16 code points (the work done before that cut is itself bounded to 4,096
   characters), and a separator that is not a string falls back to the default.
-- `maxBranchLength` and `maxTaskLength` are floored and clamped to 5..200. `segments` keeps each
-  name once (nine at most), unknown names are dropped.
+- `maxBranchLength` and `maxTaskLength` are floored and clamped at 200; a value under 5, or one
+  that is not a finite number, falls back to the default (24 and 40). `segments` keeps each name
+  once (nine at most), unknown names are dropped.
 - `.amplinerc.json`, a `.git` file and `HEAD` are read only if they are regular files of at most
   64 KB (checked on the path, then again on the open descriptor, which is opened non-blocking where
   the platform has `O_NONBLOCK`). A repository's own git config is read up to 256 KB. A symlink to a
   device or a FIFO, an oversized file and an unreadable file count as absent, or, for the git config,
   as untrusted.
-- stdin is read up to 8 MB. Past that nothing is rendered and the exit code stays 0.
+- stdin is read up to 8 million characters (UTF-16 units of the decoded text, about 8 MB for
+  ASCII). Past that nothing is rendered and the exit code stays 0.
 - The config search and the git repository search each check at most 30 directories, starting with
   the session directory, and the config search then tries the home directory.
 

@@ -318,7 +318,8 @@ rather than climbing into another one (git keeps its own ownership check), and s
 entirely when the repository's own config defines a content filter or an include. Global and
 system config (a Git LFS filter you installed, for example) are yours and are not checked. This
 narrows what a repository can make git do on every render; it does not remove it and is not a
-sandbox. Treat a directory you did not clone yourself (an unpacked archive, for example) as you
+sandbox. The marker is also left out when the repository sits in a folder whose path contains
+`:` (macOS and Linux) or `;` (Windows), because git would read that as two ceilings. Treat a directory you did not clone yourself (an unpacked archive, for example) as you
 would before running git in it.
 </details>
 

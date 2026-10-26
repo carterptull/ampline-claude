@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged; only the copyright holder named in `LICENSE` and the README footer differ.
 
 ### Fixed
-- **A huge or special file, or an oversized config value, no longer floods or hangs the render.** `segments` is deduplicated (nine at most), `separator` is capped at 16 characters, `maxBranchLength` and `maxTaskLength` are floored and clamped to 5..200, and `.amplinerc.json`, the `.git` file and `HEAD` are read only if they are regular files of at most 64 KB. Input on stdin is capped at 8 MB, past which nothing is rendered and the exit code stays 0.
+- **A huge or special file, or an oversized config value, no longer floods or hangs the render.** `segments` is deduplicated (nine at most), `separator` is capped at 16 characters, `maxBranchLength` and `maxTaskLength` are floored and clamped at 200 (a value under 5 or one that is not a finite number falls back to the default, 24 and 40), and `.amplinerc.json`, the `.git` file and `HEAD` are read only if they are regular files of at most 64 KB. Input on stdin is capped at 8 million characters (UTF-16 units of the decoded text, about 8 MB for ASCII), past which nothing is rendered and the exit code stays 0.
 - **The subagent status line now uses Claude Code's documented output format.** `--subagent`
   printed bare text rows, but Claude Code expects one JSON line per row, `{"id","content"}`, and
   keeps its own default row for anything else, so the custom rows were most likely never shown.
@@ -98,7 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Subagent rows reject malformed counts and widths.** A token count must be a positive safe integer (`0.5`, `1e-7` and `1e27` are left out) and steps to `M` from 999,950 and to `G` from 999,950,000 instead of printing `1000k` or `1000M`. `columns` must be a positive integer number, so `true` and `"500"` are ignored. A very long label is cut before it is expanded.
 - **A name of only combining marks, and a cost that rounds up to the cap, no longer print.** A model `display_name` that has no visible width falls back to the model id, and a cost of `999999999.999` is left out instead of printing `$1000000000.00`.
 - **The git repository search and the config search stop at the same depth.** Each checks at most 30 directories, starting with the session directory (the git search used 50). The config search then tries your home directory.
-- **Uninstall now recognises the command the installer wrote for any Node binary name.** A Node installed as `nodejs` (Debian and Ubuntu) or `node24` was written by `--install` but not recognised as ampline's by `--uninstall`, which left the entries behind, and a second `--install` announced them as another statusline's. The interpreter names the installer can write (`node`, `nodejs`, versioned names such as `node24`, each with an optional `.exe`, and the name of the running Node) now count; wrappers such as `node-wrapper.sh` still do not. See `DECISIONS.md` D44.
+- **Uninstall now recognises the command the installer wrote for any Node binary name.** A Node installed as `nodejs` (Debian and Ubuntu) or `node24` was written by `--install` but not recognised as ampline's by `--uninstall`, which left the entries behind, and a second `--install` announced them as another statusline's. The interpreter names the installer can write (`node`, `nodejs`, and versioned names such as `node24`, `node-24.1` or `node-v24.1.0`, each with an optional `.exe`, and the file name of the running Node) now count; anything else after the name does not, so wrappers such as `node-wrapper.sh`, `node2-wrapper.sh` and `node24.cmd` are still foreign. See `DECISIONS.md` D44.
 
 ### Security
 - **`git status` is no longer run in a repository whose own config defines a filter or an include.**
@@ -129,9 +129,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory and the repository also skips it. The scan reduces, and does not eliminate, what a
   repository's own configuration can make git do; it is not a sandbox.
   Older git: before 2.39.4/2.45.1 (depending on the release series) `GIT_NO_LAZY_FETCH` is
-  ignored, so a partial clone can fetch during the status call, and before 2.38
-  `safe.bareRepository` is ignored. Both are named in the D20
-  follow-up. A partial clone is a normal repository, so it is not skipped.
+  ignored, so a partial clone can fetch during the status call, and a lazy fetch can run the
+  transport the repository's own config names; before 2.38 `safe.bareRepository` is ignored. Both
+  are named in the D20 follow-up. A partial clone is a normal repository, so it is not skipped.
+  The call is also skipped, and the marker is left out, when the parent of the work tree's real
+  path contains the path-list separator (`:` on macOS and Linux, `;` on Windows), because git would
+  split it into two ceilings.
   Trade-off: a submodule whose work tree is dirty no longer sets the dirty marker; a moved
   submodule commit still does.
 - **Correction to the 0.3.0 entry below.** It said the `core.fsmonitor` override stopped a
