@@ -64,23 +64,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wraps when it should. A test now fails if such a character appears in the source. See
   `DECISIONS.md` D43.
 - **The installer is safer, and now has tests.** A backup that cannot be written now stops the install or
-  uninstall with exit 1, instead of rewriting `settings.json` with no way back. Only the files
-  ampline itself wrote (`settings.json.backup.<timestamp>`) are pruned, so your own
+  uninstall with exit 1, instead of rewriting `settings.json` with no way back. The install takes its
+  backup before it touches anything, so a failed backup leaves the installed copy as it was. Only the
+  files ampline itself wrote (`settings.json.backup.<timestamp>`) are pruned, so your own
   `settings.json.backup.*` copies are left alone. Only the commands the installer writes count as
   ampline's, so a wrapper such as `ampline-claude-wrap.sh` is announced before an install replaces
   it and is never deleted by uninstall. A foreign `subagentStatusLine` is announced too. The
-  settings temp file is created with the original file's permissions, `settings.json` is read
-  again just before it is written so a change Claude Code made in between is kept, and staging
-  directories left by a crashed install are cleaned up. Uninstall now also removes the runtime copy
-  and cache when `settings.json` no longer lists ampline. A new suite runs the installer,
-  uninstaller and `--help`/`--version` inside throwaway homes. See `DECISIONS.md` D44.
-- **The installed command survives a Homebrew upgrade.** Homebrew resolves Node to a versioned
-  `Cellar` path that is removed on upgrade, which left a blank statusline. When a stable `PATH` entry
-  (for example `/opt/homebrew/bin/node`) leads to the same binary, the installer writes that one. The
-  install output now names the Node path it wrote and says to re-run `--install` after upgrading Node.
+  settings temp file is created with the original file's permissions, and `settings.json` is read
+  again just before it is written, which shrinks, but does not remove, the window in which a change
+  Claude Code makes at the same moment could be lost. Staging directories left by a crashed install
+  are cleaned up once they are over a minute old and their process is gone. Uninstall now also
+  removes the runtime copy and cache when `settings.json` no longer lists ampline, and keeps them
+  while a remaining entry of yours (a wrapper script, say) still names ampline-claude. A new suite
+  runs the installer, uninstaller and `--help`/`--version` inside throwaway homes. See
+  `DECISIONS.md` D44.
+- **The installed command is more likely to survive a Homebrew upgrade.** Homebrew resolves Node to a
+  versioned `Cellar` path that is removed on upgrade, which left a blank statusline. When a stable
+  `PATH` entry (for example `/opt/homebrew/bin/node`) leads to the same binary, the installer writes
+  that one. This follows from how Homebrew lays out Node and is tested through injected paths only; it
+  has not been run on a Mac. A normal install prints exactly the same lines as before. Only when the
+  Node in use lives in a versioned directory (or no absolute path could be used) does it add the path it
+  wrote and a reminder to re-run `--install` after upgrading Node.
 - **The test suite no longer depends on the developer's machine.** Spawned renders now run with
-  `CLAUDE_CONFIG_DIR` removed and with the throwaway home as the working directory, so a real
-  `~/.claude` or a local `.amplinerc.json` cannot change a result.
+  `CLAUDE_CONFIG_DIR` removed and with the throwaway home as the working directory, and each throwaway
+  home starts with an empty `.amplinerc.json`, so a real `~/.claude` or a `.amplinerc.json` in the user
+  profile above the temp directory cannot change a result.
 
 ### Security
 - **`git status` is no longer run in a repository whose own config defines a filter or an include.**

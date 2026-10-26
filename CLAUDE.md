@@ -72,13 +72,17 @@ lib/
   install.js               settings.json merge + backup + runtime copy to ~/.claude/hooks/.
                             Writes through a symlinked settings.json rather than replacing it,
                             and preserves the original file's permission bits across the atomic
-                            rename (the temp file is created with that mode). Backs up before every
-                            write and aborts if it cannot; prunes only the exact
+                            rename (the temp file is created with that mode). Backs up before
+                            anything is changed and aborts if it cannot; prunes only the exact
                             settings.json.backup.<stamp> names to the newest 5. `pointsAtUs` matches
                             only `node "<dir>/hooks/ampline-claude/bin/ampline-claude.js"` (+ --subagent).
-                            `chooseNodePath` is the pure node-path chooser (D44). Reads settings.json
-                            again just before writing. Uninstall also clears the runtime and cache when
-                            settings no longer list ampline. Tests: test/installer.js (throwaway homes).
+                            `chooseNodePath` is the pure node-path chooser and `installMessages` the
+                            pure output list (D44): a normal install prints exactly v0.6.0's six lines
+                            (the website embeds them), and the Node/Note lines appear only for a
+                            versioned or bare-`node` choice. Reads settings.json again just before
+                            writing. Uninstall also clears the runtime and cache when settings no
+                            longer list ampline, but keeps them while a remaining foreign entry still
+                            names ampline-claude. Tests: test/installer.js (throwaway homes).
   segments/
     model.js                Model name + effort, wheel color.
     context.js               Context-window usage bar.
@@ -229,8 +233,12 @@ the tarball.
 `test/fixtures/`, each in its own throwaway `HOME`/`USERPROFILE` (see `DECISIONS.md` D14 for
 why per-fixture isolation, not per-suite, is required). Every spawn drops `CLAUDE_CONFIG_DIR`,
 `NO_COLOR` and `FORCE_COLOR` (`cleanEnv()`) and uses its throwaway home as the working directory,
-so nothing on the developer's machine can change a result. The installer tests live in
-`test/installer.js` (called from `run.js`) and must only run inside `mkdtemp` homes.
+and every throwaway home starts with an empty `.amplinerc.json`, which ends the config walk-up at
+the home for renders whose directory is the home or inside it (so a config in the user profile
+above `os.tmpdir()` cannot reach them). A payload whose `cwd` is elsewhere still walks that
+directory's own ancestors first. The installer tests live in `test/installer.js` (called from
+`run.js`), run only inside `mkdtemp` homes, and load `lib/install.js` only under a throwaway
+`CLAUDE_CONFIG_DIR`.
 `scripts/syntax-check.js` and
 `scripts/verify-pack.js` are CI-only, excluded from the published tarball by the `files`
 allowlist in `package.json`.

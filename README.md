@@ -34,11 +34,12 @@ That's it. It installs itself into `~/.claude/settings.json` and copies its runt
 `~/.claude/hooks/ampline-claude/`. Restart Claude Code or start a new session to see it.
 
 The installer writes the absolute path of the Node that ran it, so the statusline still works when
-Claude Code is launched without your shell's `PATH`. It prints that path. If it sits in a
-directory that holds a single Node version (Homebrew's `Cellar`, or the version folders of nvm,
-fnm, volta, asdf, nodenv or mise) and a stable `PATH` entry such as `/opt/homebrew/bin/node` leads
-to the same binary, the stable entry is written instead. Either way, re-run
-`npx ampline-claude --install` after you upgrade Node.
+Claude Code is launched without your shell's `PATH`. If that Node sits in a directory that holds a
+single version (Homebrew's `Cellar`, or the version folders of nvm, fnm, volta, asdf, nodenv, mise
+or snap), the installer also prints the path it wrote and a reminder to re-run
+`npx ampline-claude --install` after you upgrade Node. Where a stable `PATH` entry such as
+`/opt/homebrew/bin/node` leads to the same binary, that entry is written instead of the versioned
+one.
 
 The bare `npx ampline-claude` also installs, but only from an interactive terminal. Use
 `--install` in scripts, in CI, or any time you are not sure. It works everywhere.
@@ -91,7 +92,9 @@ up the file first; if the backup cannot be made, nothing is changed), deletes
 `~/.claude/hooks/ampline-claude/`, and clears the cache. If the entries are already gone, it still
 deletes the runtime copy and the cache. Only a command that runs the installed copy counts as
 ampline's: if your `settings.json` points at a different statusline, including your own wrapper
-script, uninstall leaves the file and the runtime copy alone. Installing works a bit differently
+script, uninstall leaves the file and the runtime copy alone. If only one of the two entries is
+ampline's, that one is removed, and the runtime copy stays for as long as the other entry still
+names `ampline-claude`. Installing works a bit differently
 though: installing over an existing foreign `statusLine` or `subagentStatusLine` prints a notice
 and then replaces it, after backing the file up. Backups are named
 `settings.json.backup.<timestamp>`, and only the newest five of those are kept.

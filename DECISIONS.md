@@ -1140,42 +1140,65 @@ four ways it could do the wrong thing quietly, and that nothing tested it.
   `null` on any failure, after which install and uninstall rewrote `settings.json` anyway. Now
   only the exact stamp ampline writes is pruned (sorted by name, which is chronological), and a
   failed backup of an existing file stops the run with exit 1 and a message, before anything is
-  written. Uninstall does the same, and removes nothing.
+  changed: the install takes its backup right after the first read, before the runtime is copied,
+  so a failure leaves the runtime copy as it was too. Uninstall does the same, and removes nothing.
 - **Which commands are ours.** `pointsAtUs` accepted any command that contained
   `ampline-claude`, so a user's `~/bin/ampline-claude-wrap.sh` was deleted by uninstall and
   replaced by install without a notice. It now accepts only `node` (bare, or an absolute path to
   a file named `node` or `node.exe`) followed by the quoted installed entry,
   `<dir>/hooks/ampline-claude/bin/ampline-claude.js`, with or without `--subagent`; the
-  README's manual-install shape matches. Anything else is foreign, and foreign keeps its existing
-  behavior: install announces it (now for `subagentStatusLine` as well as `statusLine`) and
-  replaces it after a backup, uninstall leaves it, and the runtime copy, since a wrapper may call
-  it.
+  README's manual-install shape matches. Anything else is foreign. Install announces a foreign
+  entry (now for `subagentStatusLine` as well as `statusLine`) and replaces it after a backup.
+  Uninstall leaves it alone, and keeps the runtime copy and cache whenever a foreign entry that
+  still names `ampline-claude` remains (a wrapper around the installed copy), including when
+  uninstall removed the other entry. A foreign entry that has nothing to do with ampline does not
+  keep the runtime when one of ours was removed; when nothing of ours was found and a foreign
+  entry exists, uninstall touches nothing at all.
 - **Node path (K2, amends D27).** D27 wrote `process.execPath`. Node resolves that through
   realpath, so Homebrew gives `/opt/homebrew/Cellar/node/<version>/bin/node`, and `brew
   upgrade` plus its cleanup deletes it: the statusline goes blank with no message, the failure
   D27 set out to prevent. `chooseNodePath` (pure, with `execPath`, the PATH entries, `realpath`
   and the file check injected) now does this: if `execPath` is in a versioned directory (Homebrew
-  `Cellar`; nvm, fnm, volta, asdf, nodenv, mise) it looks through PATH for a `node` whose
-  realpath is the same file and whose own path is not in such a directory, and writes that one;
-  otherwise it keeps `execPath`. A PATH entry inside a version directory is skipped, because it
-  is no more durable, and fnm's per-shell `fnm_multishells` symlinks are skipped because they
-  disappear at reboot. The chosen path and "re-run `npx ampline-claude --install` after
-  upgrading Node" are printed on every install.
-- **Smaller.** The settings temp file is created with the target's mode (it could be world
-  readable for an instant, and an old file at that name is removed rather than written through).
-  `ampline-claude.new-<pid>` and `.old-<pid>` directories older than a minute are removed on
-  install. `settings.json` is read again right before the final write and the entries are merged
-  into that copy, which shrinks, but does not remove, the window in which Claude Code's own
-  write could be lost. Uninstall when `settings.json` has no ampline entries still deletes the
-  runtime copy and cache and says so, unless a different statusline is configured.
+  `Cellar`; nvm, fnm, volta, asdf, nodenv, mise, snap revisions) it looks through PATH for a
+  `node` whose realpath is the same file and whose own path is not in such a directory, and
+  writes that one. If there is none, it writes the real file behind `execPath` when that is not
+  versioned either, and otherwise keeps `execPath`. A PATH entry inside a version directory is
+  skipped, because it is no more durable, and fnm's per-shell `fnm_multishells` symlinks are
+  skipped because they disappear at reboot.
+- **Output contract.** The website embeds the installer's output verbatim and compares it in CI,
+  so a normal install prints exactly the six lines v0.6.0 printed. Everything new is shown only
+  when it applies, and the list is built by a pure function, `installMessages`: an optional
+  `replacing an existing statusLine command:` notice (then the same for `subagentStatusLine`),
+  `✓ ampline-claude installed.`, then, only when the Node choice is notable (`execPath` is in a
+  versioned directory, or the bare `node` fallback was used), `  Node: <path written>` and
+  a note that says to re-run `npx ampline-claude --install` after upgrading Node, then
+  `  Previous settings backed up to <name>` only when a settings file existed, a blank line, the
+  restart line, a blank line, the Customize line and the URL. When a stable PATH entry or a real
+  file was written, `execPath` is necessarily versioned, so one test covers every case.
+- **Smaller.** The settings temp file is created with the target's mode (it could be readable by
+  more users for an instant, and an old file at that name is removed rather than written
+  through). `ampline-claude.new-<pid>` and `.old-<pid>` directories are removed on install and
+  uninstall only when they are older than a minute and their process no longer exists
+  (`kill(pid, 0)` reporting `ESRCH`; `EPERM` counts as alive), so a second installer that is
+  still running is never disturbed. `settings.json` is read again right before the final write
+  and the entries are merged into that copy, which shrinks, but does not remove, the window in
+  which Claude Code's own write could be lost; the backup is of the first read. Uninstall when
+  `settings.json` has no ampline entries still deletes the runtime copy and cache and says so,
+  unless a different statusline is configured.
 
 **Tests.** `test/installer.js` runs the real binary in `mkdtemp` homes, with `CLAUDE_CONFIG_DIR`
 removed and the working directory inside the home, and covers install, re-install, a foreign
 entry, a wrapper script, an unparseable file, a symlinked file, file mode, pruning, uninstall in
-each state, stale staging, and `--help`/`--version`. Two tests call `lib/install.js` in process
-with `CLAUDE_CONFIG_DIR` pointed at a temporary directory and a stubbed `copyFileSync`, to reach
-the failed-backup path on any OS. The spawned-render helpers in `test/run.js` now also drop
-`CLAUDE_CONFIG_DIR` and use the throwaway home as the working directory.
+each state, stale staging, the output contract, and `--help`/`--version`. In-process tests load
+`lib/install.js` against a throwaway `CLAUDE_CONFIG_DIR` (set before `require`, never unset) and
+wrap or fail `fs` calls to reach what a spawned run cannot on every OS: a failed backup, the
+mode the temp file is created with, an edit to `settings.json` made mid-install, and a failed
+swap with its rollback. The spawned-render helpers in `test/run.js` also drop `CLAUDE_CONFIG_DIR`
+and use the throwaway home as the working directory, and every throwaway home starts with an
+empty `.amplinerc.json`. That ends the config walk-up at the home for any render whose directory
+is the home or inside it, so a `.amplinerc.json` in the user profile above `os.tmpdir()` cannot
+change a result. A payload whose `cwd` is elsewhere (a fixture's `/tmp/project`) still walks that
+directory's own ancestors first.
 
 **Rejected:**
 - *Always writing a bare `node`.* Brings back the blank statusline under a GUI launch that D27 fixed.
