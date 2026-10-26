@@ -336,7 +336,7 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
       fs.existsSync(runtimeDir(home)) && fs.existsSync(cacheDir(home)) && /Kept the runtime copy: subagentStatusLine/.test(r.out), JSON.stringify(r.out));
   });
 
-  // Settings already lack the entries (Minor 17): the runtime and cache still go.
+  // Settings already lack the entries because the file is gone: the runtime and cache still go.
   withHome((home) => {
     run(home, ['--install']);
     writeSettings(home, USER_SETTINGS()); // the user removed the entries by hand
@@ -370,7 +370,7 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
       r.status === 0 && fs.existsSync(runtimeDir(home)) && /different statusline/.test(r.out), JSON.stringify(r.out));
   });
 
-  // ---- stale staging directories (Minor 9) -----------------------------------------------
+  // ---- stale staging directories -----------------------------------------------
 
   // A pid that is certainly gone: a child that has already exited. One that is certainly alive:
   // this test process.
@@ -426,7 +426,7 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
     check('--help writes nothing to stderr and changes nothing on disk', long.err === '' && !fs.existsSync(settingsPath(home)) && !fs.existsSync(runtimeDir(home)), long.err);
   });
 
-  // ---- test isolation (K3) ---------------------------------------------------------------
+  // ---- test isolation ---------------------------------------------------------------
 
   {
     const saved = process.env.CLAUDE_CONFIG_DIR;
@@ -463,7 +463,7 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
     }
   }
 
-  // ---- in-process: node path chooser (K2), command matching and backup names (S4) --------
+  // ---- in-process: node path chooser, command matching and backup names --------
 
   {
     const { chooseNodePath, isVersionedNodePath } = install;
@@ -583,11 +583,15 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
       `"C:/Program Files/nodejs/node.exe" "C:/Users/u/.claude/hooks/ampline-claude/bin/ampline-claude.js"`,
       `"C:\\Program Files\\nodejs\\node.exe" "C:\\Users\\u\\.claude\\hooks\\ampline-claude\\bin\\ampline-claude.js"`,
       `node "/custom/config/hooks/ampline-claude/bin/ampline-claude.js"`,
+      // Interpreters the installer can write: Debian's nodejs, versioned binaries, nodejs.exe.
+      `"/usr/bin/nodejs" "${e}"`, `"/usr/bin/nodejs" "${e}" --subagent`, `"/usr/local/bin/node24" "${e}"`,
+      `"/opt/node/bin/node-24.1" "${e}" --subagent`, `"C:/Program Files/nodejs/nodejs.exe" "${e}"`,
     ];
     const no = [
       '~/bin/ampline-claude-wrap.sh', '~/bin/ampline-claude-wrap.sh --subagent', 'bash ampline-claude.sh', 'npx ampline-claude',
       `node "${e}" --other-flag`, `node "${e}"; rm -rf ~`, `node "${e}" && echo hi`, `echo "${e}"`,
       `node "/x/hooks/ampline-claude/bin/ampline-claude.js.bak"`, `node "/x/hooks/ampline-claude-two/bin/ampline-claude.js"`, '', 'ampline-claude',
+      `node-wrapper.sh "${e}"`, `nodemon "${e}"`, `"/usr/bin/nodes" "${e}"`, `"/opt/mynode" "${e}"`, `"/usr/bin/node.sh" "${e}"`,
     ];
     check('pointsAtUs accepts the exact command shapes the installer writes', yes.every((c) => pointsAtUs({ command: c })), JSON.stringify(yes.filter((c) => !pointsAtUs({ command: c }))));
     check('pointsAtUs rejects wrappers, other flags, chained commands and look-alike paths', no.every((c) => !pointsAtUs({ command: c })), JSON.stringify(no.filter((c) => pointsAtUs({ command: c }))));
@@ -694,7 +698,7 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
       u.code === 1 && u.errs.some((e) => /could not back up/.test(e)) && fs.readFileSync(settings, 'utf8') === ours && fs.existsSync(path.join(mod.INSTALL_DIR, 'marker.txt')), JSON.stringify(u));
   });
 
-  // Minor 8: the temp file is created with the target's mode, not the umask default.
+  // The temp file is created with the target's mode, not the umask default.
   inSandbox(({ mod, settings }) => {
     fs.writeFileSync(settings, JSON.stringify({ env: { KEEP: '1' } }) + '\n');
     if (!WIN) fs.chmodSync(settings, 0o600);
@@ -708,7 +712,7 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
       !!tmpWrite && !!tmpWrite.opts && typeof tmpWrite.opts === 'object' && tmpWrite.opts.mode === expected, JSON.stringify(seen.map((c) => [c.p, c.opts])));
   });
 
-  // Minor 10: a change another process makes to settings.json while the install runs is kept.
+  // A change another process makes to settings.json while the install runs is kept.
   inSandbox(({ mod, settings }) => {
     fs.writeFileSync(settings, JSON.stringify({ env: { KEEP: '1' } }) + '\n');
     let edited = false;
@@ -740,6 +744,36 @@ function runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail }) {
     check('an uninstall keeps a change made to settings.json after it first read the file',
       r.code === 0 && edited && after.lateKey === 'added during uninstall' && !('statusLine' in after), JSON.stringify({ r, after }));
   });
+
+  // Install, then uninstall, with an interpreter that is not named `node`: what install writes must
+  // be recognised as ours, or uninstall leaves the entries behind and a re-install calls them foreign.
+  for (const name of ['nodejs', 'node24']) {
+    inSandbox(({ dir, mod, settings }) => {
+      const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-node-'));
+      const fakeNode = path.join(binDir, name);
+      const savedExec = process.execPath;
+      try {
+        fs.writeFileSync(fakeNode, '');
+        process.execPath = fakeNode;
+        const first = runPatched(() => mod.runInstaller());
+        const written = JSON.parse(fs.readFileSync(settings, 'utf8'));
+        check(`round trip with ${name}: install writes the interpreter by its own name`,
+          first.code === 0 && written.statusLine.command === `"${fwd(fakeNode)}" "${fwd(path.join(mod.INSTALL_DIR, 'bin', 'ampline-claude.js'))}"`
+            && written.subagentStatusLine.command.startsWith(`"${fwd(fakeNode)}" `), JSON.stringify([first, written]));
+        const again = runPatched(() => mod.runInstaller());
+        check(`round trip with ${name}: installing again does not call our own entries foreign`,
+          again.code === 0 && !again.outs.some((l) => /replacing an existing/.test(l)), JSON.stringify(again.outs));
+        const gone = runPatched(() => mod.runInstaller({ uninstall: true }));
+        const after = JSON.parse(fs.readFileSync(settings, 'utf8'));
+        check(`round trip with ${name}: uninstall removes both entries, the runtime copy and the cache`,
+          gone.code === 0 && !('statusLine' in after) && !('subagentStatusLine' in after)
+            && !fs.existsSync(mod.INSTALL_DIR) && /ampline-claude removed/.test(gone.outs.join(' ')), JSON.stringify([gone, after]));
+      } finally {
+        process.execPath = savedExec;
+        try { fs.rmSync(binDir, { recursive: true, force: true }); } catch {}
+      }
+    });
+  }
 
   // copyRuntime: when the swap fails, the previous install is put back and nothing is left behind.
   inSandbox(({ mod, settings }) => {
