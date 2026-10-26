@@ -286,6 +286,21 @@ Code already sends on stdin.
 </details>
 
 <details>
+<summary>Is it safe to open a repository I did not write?</summary>
+
+The branch name is read straight from `.git/HEAD` with no subprocess. The ahead, behind and
+dirty marker comes from one `git status` call, and `git status` follows the repository's own
+configuration. ampline-claude overrides `core.fsmonitor` for that call, and it does not run
+`git status` at all in a repository whose own config (`.git/config`, `config.worktree`, and for a
+linked worktree the shared one) defines a content filter (`[filter ...]`) or any
+`include`/`includeIf`. There the branch still shows, without the marker. Global and system git
+configuration, such as a Git LFS filter you installed, is yours and is not scanned. Everything
+else in a repository's own config is trusted exactly as when you run git yourself in that
+directory, so as with any tool that runs `git status` there, treat a directory you did not
+clone yourself (an unpacked archive, for example) with the same care you would in a terminal.
+</details>
+
+<details>
 <summary>Can it break Claude Code?</summary>
 
 The installer never overwrites a `settings.json` it can't parse. It aborts and prints the

@@ -73,7 +73,8 @@ flowchart LR
         san["<b>sanitize()</b><br/>strips C0 and C1 controls,<br/>line separators, bidi overrides,<br/>zero-width and tag characters"]
         link["<b>safeLinkUrl()</b><br/>https only, printable ASCII,<br/>2048 chars max, no credentials"]
         own["Own-property lookup<br/>review_state, exact match on pr.kind"]
-        gitcall["<b>Hardened git call</b><br/>-c core.fsmonitor= · --no-optional-locks<br/>400ms timeout · no shell"]
+        gitscan["<b>Repo-config scan</b><br/>skip git status if the repo's own config<br/>has a filter, include or includeIf"]
+        gitcall["<b>Constrained git call</b><br/>-c core.fsmonitor= · --no-optional-locks<br/>400ms timeout · no shell"]
         cfgval["Config validation<br/>segment allowlist, numeric floors"]
     end
 
@@ -83,7 +84,8 @@ flowchart LR
     payload --> link
     payload --> own
     repo --> san
-    repo --> gitcall
+    repo --> gitscan
+    gitscan -->|"clean config only"| gitcall
     repo --> cfgval
     todos --> san
     san --> out
@@ -104,7 +106,8 @@ flowchart LR
 | `safeLinkUrl()` in `lib/segments/pr.js` | `pr.url` before it goes inside an OSC 8 hyperlink | A BEL or ESC in a URL ending the link early and injecting more. Only a plain `https` URL with no credentials becomes a link, and the parsed `href` is emitted, not the raw string (D38) |
 | `Object.hasOwn` lookup, exact `pr.kind` match | `review_state` color table, subagent `status` color table, `!N` versus `#N` label | `review_state: "constructor"` or `status: "constructor"` printing function source. The `kind` string itself is never interpolated (D38, D41) |
 | Type and range checks | `repo.name` and `display_name` must be strings, a non-string `current_dir` falls back to `cwd`, cost must be in 0 to 1e9 and line counts non-negative integers | A sanitized `String({})` is still `[object Object]`, and a bare finite number printed as `1e+21`, `$-5.00` or `+-3` (D42) |
-| `-c core.fsmonitor=` | the one `execFileSync('git', ...)` call | A repo's `.git/config` naming a hook command that git would run on every render (D20) |
+| Repo-local config scan (`repoConfigIsTrusted`) | before the `git status` call; reads `config` and `config.worktree` of the gitdir, plus the common directory's for a linked worktree | A repository's own config naming a content filter driver (`[filter ...]`) or an `include`/`includeIf` file, which `git status` would honor. The call is skipped: the branch still shows, with no ahead/behind/dirty marker and no cache entry. Unreadable or malformed config also skips it. Global and system config are not scanned, and the rest of a repository's own config is trusted as when you run git there yourself (D20 follow-up) |
+| `-c core.fsmonitor=` | the one `execFileSync('git', ...)` call | A repo's `.git/config` naming an fsmonitor hook command that git would run on every render. This overrides fsmonitor only (D20) |
 | `--no-optional-locks` | the same call | Taking the index lock every 30 seconds and contending with the user's own git commands |
 | 400ms timeout, argv array, stderr ignored | the same call | A slow or hung `git` blocking a render. There is no shell, so no argument is parsed as a command line |
 | Config validation | `lib/config.js` | A config file naming unknown segments or nonsense numbers. Config is data only, with no path or command keys |

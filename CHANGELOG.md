@@ -64,6 +64,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wraps when it should. A test now fails if such a character appears in the source. See
   `DECISIONS.md` D43.
 
+### Security
+- **`git status` is no longer run in a repository whose own config defines a filter or an include.**
+  `git status` also honors content filter drivers and `include`/`includeIf` files named in a
+  repository's own config, which `-c core.fsmonitor=` does not cover; a repository that arrived as
+  an archive (a clone does not transfer `.git/config`) could use them to run a command on every
+  render. Before spawning `git status`, ampline now reads the repo-local config (`config`,
+  `config.worktree`, and for a linked worktree the common directory's, found through
+  `commondir`). If it defines a `[filter ...]`, `[include]` or `[includeIf ...]` section, or cannot
+  be read and parsed, the call is skipped: the branch still shows from `HEAD`, with no
+  ahead/behind/dirty marker and no cache entry. Global and system config are not scanned, and
+  everything else in a repository's own config is trusted exactly as when you run git yourself
+  there. See `DECISIONS.md` D20 (follow-up).
+- **Correction to the 0.3.0 entry below.** It said the `core.fsmonitor` override stopped a
+  repository's `.git/config` from running a command on every render. That was too broad:
+  the override closes only the fsmonitor path. Filters and includes were not covered until this
+  release.
+
 ## [0.6.0] - 2026-10-07
 
 ### Added
@@ -170,6 +187,8 @@ each item below.
 - `git status` ran with no protection against a repo's own `.git/config` `core.fsmonitor` hook
   command, which could execute arbitrary code on every render for a hostile extracted archive.
   Hardened the invocation with `-c core.fsmonitor=` and `--no-optional-locks`.
+  _Correction (2026-10-25): this closed only the fsmonitor path. Filter drivers and includes in a
+  repository's own config were not covered until the `[Unreleased]` Security entry above._
 - Branch names, todo text, and subagent labels truncated near a surrogate pair could render a
   broken `�` character. Truncation now splits on code points, not UTF-16 units.
 - A PR payload shaped like `{ number: null }` rendered a phantom `#0`. `pr.js` now requires a

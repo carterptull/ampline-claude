@@ -58,6 +58,10 @@ lib/
                             Optional pace marker (┃) for the usage bars; glyph-only so it survives NO_COLOR.
   cache.js                 Two-tier fresh/stale file cache. Handles the Windows ':' filename bug
                             and atomic writes (two processes — main + subagent — can race).
+  safeRead.js              readSmallTextFile(path, maxBytes?) -> string | null. The only way to read
+                            a file from a checkout we do not control (.amplinerc.json, .git, HEAD,
+                            repo-local git config): regular files of at most 64 KB by default,
+                            checked again on the open descriptor; null on anything else.
   usage.js                 stdin rate_limits -> write-through cache -> resolveUsage(). Synchronous.
                             Also the window pace math: elapsedFraction, paceRampPct (D39, D40).
   config.js                .amplinerc.json loader: walk up from cwd, then home, first file wins.
@@ -75,8 +79,14 @@ lib/
     rateLimits.js             5-hour + weekly usage bars, with the pace marker and opt-in paceColors.
     git.js                     Branch (from .git/HEAD, no subprocess) + ahead/behind/dirty
                                (one cached `git status --porcelain=v2` call, run with
-                               `-c core.fsmonitor=` and `--no-optional-locks` — a repo's own
-                               .git/config cannot run a hook command through this call).
+                               `-c core.fsmonitor=` and `--no-optional-locks`). fsmonitor is
+                               overridden; if the repo's OWN config (config, config.worktree,
+                               and a linked worktree's common dir via `commondir`) defines a
+                               `[filter ...]`, `[include]` or `[includeIf ...]` section, or cannot
+                               be read and parsed, the call is skipped (branch only, no marker,
+                               no `git:` cache entry; D20 follow-up). Everything else in the
+                               repo's own config is trusted exactly as when you run git yourself
+                               there; global and system config are never scanned.
     cost.js                     Session cost + lines added/removed.
     task.js                      Current in-progress todo, from ~/.claude/todos/.
     pr.js                          Open PR (`#N`) or GitLab MR (`!N`, when `pr.kind === 'mr'`) +

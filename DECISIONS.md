@@ -375,6 +375,39 @@ to the `execFileSync('git', ...)` argv in `git.js`. The second flag is independe
 having regardless of the security angle — without it, the statusline was taking the index lock
 every 30s (`refreshInterval`) and could contend with a concurrent interactive git command.
 
+**Follow-up (2026-10-25): the fsmonitor override was not the whole story.** An audit before 1.0
+found that this entry, and the CHANGELOG line and diagram text that repeat it, claimed more than
+`-c core.fsmonitor=` delivers. That flag closes one mechanism. `git status` also runs content
+filter drivers that a repository's own config defines and that `.gitattributes` selects, and it
+honors `include` and `includeIf` files named in that config. The precondition is unchanged
+(the repo's `.git/config` came from someone else, for example an extracted archive), and Claude
+Code itself runs git in the workspace, so the added exposure is that ampline repeats the call on
+every render. The original text above stands as the record of what was believed then.
+
+**Decision:** before the subprocess, `git.js` scans the repo-local config files: `<gitdir>/config`
+and `<gitdir>/config.worktree`, plus, for a linked worktree, the same two files in the common
+directory found through the `commondir` file. If any of them defines a `[filter ...]` section (any
+key), an `[include]` or an `[includeIf ...]` section, or cannot be read or parsed (not a small
+regular file, over 256 KB, malformed header), ampline does not run `git status` in that repo. The
+branch still renders from `HEAD`; the ahead/behind/dirty marker is left out and no `git:` cache
+entry is written. The scan runs before the cache is read, so an untrusted repo never serves a
+result either.
+
+What this does and does not block, stated precisely:
+- Blocked: fsmonitor (overridden on the command line), and, by skipping the call, repo-local filter
+  drivers and includes.
+- Not blocked: everything else in a repository's own config is trusted exactly as when you run git
+  yourself in that repository. As with any tool that runs `git status` there, a repository's own
+  configuration is trusted unless ampline detects a filter or include in it.
+- Not scanned on purpose: global and system config (a user's own LFS filter, for example, keeps
+  working because it is not repo-local).
+
+**Alternatives considered:** requiring the repo directory to be owned by the current user (cheap
+but platform-specific and does not cover a user who unpacked the archive themselves); dropping
+ahead/behind/dirty or making it opt-in (loses a feature for everyone to guard a narrow case);
+asking git to parse the config (`git config`) would add a second subprocess to every render. The scanner is a conservative header check, not a full config parser, and errs toward
+skipping the call.
+
 ### D21. Surrogate-pair-unsafe truncation fixed in three segments
 
 `truncateBranch` (`git.js`), `decorate` (`task.js`), and `truncate` (`subagents.js`) all
