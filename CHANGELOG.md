@@ -76,13 +76,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ahead/behind/dirty marker and no cache entry. Global and system config are not scanned, and
   everything else in a repository's own config is trusted exactly as when you run git yourself
   there. See `DECISIONS.md` D20 (follow-up).
-- **The `git status` call is pinned to the repository that was scanned.** It now passes
-  `--git-dir` and `--work-tree` (so git's own repository discovery and `.git`-file parsing cannot
-  land somewhere ampline never looked), `-c safe.bareRepository=explicit`, and
-  `--ignore-submodules=dirty` (submodules have their own config, which is not scanned).
-  `commondir` and `.git` files are read exactly as git reads them, and any value with extra
-  whitespace, a carriage return or an embedded newline skips the call. A bare-looking directory
-  between the working directory and the repository also skips it.
+- **The `git status` call starts at the repository that was scanned and stays out of
+  submodules.** git is run in the directory that holds the `.git` entry ampline read, so its own
+  discovery begins there and its ownership (`safe.directory`) check still applies. It also gets
+  `-c safe.bareRepository=explicit`, `--ignore-submodules=dirty` (submodules have their own config,
+  which is not scanned) and `GIT_NO_LAZY_FETCH=1`. ampline's reading of `.git` files and
+  `commondir` is stricter than git's: any value with extra whitespace, a carriage return or an
+  embedded newline skips the call, and `commondir` is resolved the way git resolves it (symlinks
+  followed before `..`). A bare-looking directory between the working directory and the repository
+  also skips it. The scan reduces, and does not eliminate, what a repository's own configuration
+  can make git do; it is not a sandbox.
   Trade-off: a submodule whose work tree is dirty no longer sets the dirty marker; a moved
   submodule commit still does.
 - **Correction to the 0.3.0 entry below.** It said the `core.fsmonitor` override stopped a

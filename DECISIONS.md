@@ -399,14 +399,25 @@ positives are accepted.
 A second finding from review: the scanner read the files ampline THOUGHT git would read, not the
 files git reads. Three divergences existed (an embedded bare directory at the cwd that git treats
 as the repository while ampline walked up to an outer one; a `commondir` value git reads
-literally, minus one trailing newline, while ampline trimmed it; and a `.git` file whose
-`gitdir:` value git also reads literally while ampline's pattern skipped extra spaces). So the
-call is now pinned: `--git-dir=<scanned git dir>` and `--work-tree=<directory holding the .git
-entry>` bypass git's discovery and gitfile parsing, `-c safe.bareRepository=explicit` is added,
-`commondir` and the gitfile are parsed exactly like git (one trailing newline dropped, no trim),
-and a value with leading or trailing whitespace, a carriage return, an embedded newline or no
-characters is untrusted (the call is skipped). A bare-looking directory between the cwd and the
-repository also skips the call.
+literally, minus trailing line breaks, while ampline trimmed it; and a `.git` file whose
+`gitdir:` value git also reads literally while ampline's pattern skipped extra spaces). The
+fixes, and what is deliberately not done:
+- ampline's parsing of the gitfile and `commondir` is STRICTER than git's: git strips all trailing
+  CR/LF, ampline accepts one trailing newline and treats any other oddity (leading or trailing
+  whitespace, a carriage return, an embedded newline, an empty value) as untrusted and skips the
+  call.
+- `commondir` is resolved the way git does it: `"<gitdir>/<value>"` handed to the real-path call
+  as one string (symlinks followed before `..`), not collapsed textually. A failed lookup is
+  untrusted.
+- git is started with its working directory set to the directory that holds the `.git` entry
+  ampline scanned (git checks `<dir>/.git` first), so its own discovery begins at that entry and
+  it keeps its own ownership (`safe.directory`) check. `--git-dir` and `--work-tree` were tried
+  and rejected: they skip discovery and with it the ownership check (with
+  `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`, unpinned git refuses and pinned git runs). Do not re-add
+  them. `-c safe.bareRepository=explicit` is added, and `GIT_NO_LAZY_FETCH=1` goes in the child's
+  environment.
+- A bare-looking directory between the cwd and the repository still skips the call, as defense in
+  depth (cheap, and its only false positive is a cwd that really is a git dir).
 
 Two more narrowings: `--ignore-submodules=dirty` (submodules have their own config, which is
 not scanned, so `git status` must not recurse into them; trade-off: a submodule whose work tree
@@ -416,13 +427,13 @@ reclassification of `--no-optional-locks` as a real defense, not a courtesy: wit
 run.
 
 What this does and does not block, stated precisely:
-- Blocked: fsmonitor (overridden on the command line); optional index writes; submodule
-  recursion; git picking a different repository than the one scanned; and, by skipping the
-  call, repo-local filter drivers and includes.
-- Not blocked: everything else in a repository's own config is trusted exactly as when you run
-  git yourself in that repository. As with any tool that runs `git status` there, a
-  repository's own configuration is trusted unless ampline detects a filter or include in it.
-  This narrows what a repository can make git do on every render; it is not a sandbox.
+- Turned off or skipped: fsmonitor (overridden on the command line); optional index writes; git
+  running inside submodules; and, by skipping the call, repo-local filter drivers and includes.
+- Not blocked: everything else in a repository's own config is trusted as when you run git
+  yourself in that repository. As with any tool that runs `git status` there, a repository's own
+  configuration is trusted unless ampline detects a filter or include in it. The scan reduces,
+  and does not eliminate, what a repository's own configuration can make git do on every render;
+  it is not a sandbox.
 - Not scanned on purpose: global and system config (a user's own LFS filter, for example, keeps
   working because it is not repo-local).
 

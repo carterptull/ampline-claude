@@ -291,9 +291,9 @@ Code already sends on stdin.
 The branch is read from `.git/HEAD` without running anything. The ahead/behind/dirty marker comes
 from one `git status` call, and git follows the repository's own configuration, as it does when
 you run it yourself. ampline-claude turns off `core.fsmonitor` for that call, does not let it
-write the index, does not look inside submodules (a submodule with a dirty work tree does not set
-the dirty marker; a moved submodule commit still does), pins git to the repository it inspected,
-and skips the call entirely when the repository's own config defines a content filter or an
+write the index, does not run git inside submodules (a submodule with a dirty work tree does not
+set the dirty marker; a moved submodule commit still does), starts git in the repository it
+inspected (git keeps its own ownership check), and skips the call entirely when the repository's own config defines a content filter or an
 include. Global and system config (a Git LFS filter you installed, for example) are yours and are
 not checked. This narrows what a repository can make git do on every render; it is not a
 sandbox. Treat a directory you did not clone yourself (an unpacked archive, for example) as you

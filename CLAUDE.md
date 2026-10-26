@@ -82,18 +82,21 @@ lib/
                                `buildStatusArgs`: fsmonitor overridden, `--no-optional-locks`
                                (a real defense: no index write, so no post-index-change hook),
                                `--ignore-submodules=dirty` (a dirty submodule work tree does not
-                               set the marker), `safe.bareRepository=explicit`, and `--git-dir` /
-                               `--work-tree` pinned to the repository that was scanned). If the
+                               set the marker), `safe.bareRepository=explicit`; run with cwd = the
+                               directory holding the scanned `.git` entry, NEVER `--git-dir` /
+                               `--work-tree`, which would skip git's ownership check). If the
                                repo's OWN config (config, config.worktree, and a linked
-                               worktree's common dir via `commondir`, parsed exactly like git)
-                               defines a `[filter ...]`, `[include]` or `[includeIf ...]`
-                               section, or cannot be read and parsed, or a `.git` file or
-                               `commondir` has odd whitespace, or a bare-looking directory sits
-                               between the cwd and the repo, the call is skipped (branch only, no
-                               marker, no `git:` cache entry; D20 follow-up). Everything else in
-                               the repo's own config is trusted exactly as when you run git
-                               yourself there; global and system config are never scanned. This
-                               narrows what a repository can make git do; it is not a sandbox.
+                               worktree's common dir via `commondir`, resolved by real path the
+                               way git does) defines a `[filter ...]`, `[include]` or
+                               `[includeIf ...]` section, or cannot be read and parsed, or a
+                               `.git` file or `commondir` is not a clean value (ampline is
+                               stricter than git here), or a bare-looking directory sits between
+                               the cwd and the repo, the call is skipped (branch only, no marker,
+                               no `git:` cache entry; D20 follow-up). Everything else in the
+                               repo's own config is trusted as when you run git yourself there;
+                               global and system config are never scanned. The scan reduces, and
+                               does not eliminate, what a repository can make git do; it is not
+                               a sandbox.
     cost.js                     Session cost + lines added/removed.
     task.js                      Current in-progress todo, from ~/.claude/todos/.
     pr.js                          Open PR (`#N`) or GitLab MR (`!N`, when `pr.kind === 'mr'`) +
