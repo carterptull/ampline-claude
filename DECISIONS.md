@@ -375,6 +375,111 @@ to the `execFileSync('git', ...)` argv in `git.js`. The second flag is independe
 having regardless of the security angle — without it, the statusline was taking the index lock
 every 30s (`refreshInterval`) and could contend with a concurrent interactive git command.
 
+**Follow-up (2026-10-25): the fsmonitor override was not the whole story.** A review before 1.0
+found that this entry, and the CHANGELOG line and diagram text that repeat it, claimed more than
+`-c core.fsmonitor=` delivers. That flag closes one mechanism. `git status` also runs content
+filter drivers that a repository's own config defines and that `.gitattributes` selects, and it
+honors `include` and `includeIf` files named in that config. The precondition is a repository
+directory that arrives with its own config: an extracted archive, or an embedded bare directory
+inside a clone. Claude Code itself runs git in the workspace, so the added exposure is that
+ampline repeats the call on every render. The original text above stands as the record of what
+was believed then.
+
+**Decision:** before the subprocess, `git.js` scans the repo-local config files: `<gitdir>/config`
+and `<gitdir>/config.worktree`, plus, for a linked worktree, the same two files in the common
+directory found through the `commondir` file. If any of them defines a `[filter ...]` section
+(any key), an `[include]` or an `[includeIf ...]` section, or cannot be read or parsed (not a
+small regular file, over 256 KB, malformed header), ampline does not run `git status` in that
+repo. The branch still renders from `HEAD`; the ahead/behind/dirty marker is left out and no
+`git:` cache entry is written. The scan runs before the cache is read, so an untrusted repo never
+serves a result either. As a belt-and-braces rule, any `[` followed by `filter` or `include`
+anywhere in the text (a comment or a value included) also counts as untrusted; those false
+positives are accepted.
+
+A second finding from review: the scanner read the files ampline THOUGHT git would read, not the
+files git reads. Three divergences existed (an embedded bare directory at the cwd that git treats
+as the repository while ampline walked up to an outer one; a `commondir` value git reads
+literally, minus trailing line breaks, while ampline trimmed it; and a `.git` file whose
+`gitdir:` value git also reads literally while ampline's pattern skipped extra spaces). The
+fixes, and what is deliberately not done:
+- ampline's parsing of the gitfile and `commondir` is STRICTER than git's: git strips all trailing
+  CR/LF, ampline accepts one trailing newline and treats any other oddity (leading or trailing
+  whitespace, a carriage return, an embedded newline, an empty value) as untrusted and skips the
+  call.
+- `commondir` and the `.git` file's target are resolved the way git does it: `"<dir>/<value>"`
+  handed to the real-path call as one string (symlinks followed before `..`), not collapsed
+  textually; the git dir is validated and read there. A failed lookup is untrusted. The textual
+  path stays only as the cache key.
+- git is started with its working directory set to the directory that holds the `.git` entry
+  ampline scanned (git checks `<dir>/.git` first), so its own discovery begins at that entry and
+  it keeps its own ownership (`safe.directory`) check. It starts there, but git does not
+  necessarily END there: a `.git` directory that fails git's `is_git_directory` check (HEAD,
+  `objects/`, `refs/`) is skipped by git, which then walks up to a parent repository ampline never
+  scanned. So ampline mirrors that check (failing it skips the call) and also sets
+  `GIT_CEILING_DIRECTORIES` to the work tree's parent, so that a rejected entry makes git fail
+  instead of climbing, without giving up discovery or the ownership check. A final review found
+  two ways that was weaker than it sounded, both fixed: the mirror trimmed HEAD, which git does
+  not (git skips no whitespace before `ref:` or an object id, so " ref: refs/heads/x" passes a
+  trimmed check and fails git's) and did not test that `objects/` and `refs/` are searchable
+  (`access(X_OK)`); and git compares the ceiling with the REAL path of its cwd, so for a work tree
+  reached through a symlink or junction a ceiling built from the logical path let git climb out
+  (verified with a junction and a rejected entry: git reported the outer repository). Git is now
+  started at the real path of the work tree, its parent is the ceiling, and the call is skipped
+  if the real path cannot be resolved or its parent contains the path-list separator. "Cannot
+  walk above" is not claimed: the ceiling makes a rejected entry fail, it does not make git safe.
+  `--git-dir` and `--work-tree` were tried and rejected: they skip discovery and with it the
+  ownership check (with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`, unpinned git refuses and pinned git
+  runs). Do not re-add them. `-c safe.bareRepository=explicit` is added; `GIT_NO_LAZY_FETCH=1`
+  goes in the child's environment; and the inherited variables that name a repository
+  (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`) are removed from it.
+- A bare-looking directory between the cwd and the repository still skips the call, as defense in
+  depth (cheap, and its only false positive is a cwd that really is a git dir).
+
+Two more narrowings: `--ignore-submodules=dirty` (submodules have their own config, which is
+not scanned, so `git status` must not recurse into them; trade-off: a submodule whose work tree
+is dirty no longer sets the dirty marker, while a moved submodule commit still counts) and the
+reclassification of `--no-optional-locks` as a real defense, not a courtesy: without it
+`git status` refreshes and writes the index, and a repository-local post-index-change hook can
+run.
+
+What this does and does not block, stated precisely:
+- Turned off or skipped: fsmonitor (overridden on the command line); optional index writes; git
+  running inside submodules; and, by skipping the call, repo-local filter drivers and includes.
+- Not blocked: everything else in a repository's own config is trusted as when you run git
+  yourself in that repository. As with any tool that runs `git status` there, a repository's own
+  configuration is trusted unless ampline detects a filter or include in it. The scan reduces,
+  and does not eliminate, what a repository's own configuration can make git do on every render;
+  it is not a sandbox.
+- Not scanned on purpose: global and system config (a user's own LFS filter, for example, keeps
+  working because it is not repo-local).
+- Older git, accepted residuals: before git 2.39.4/2.45.1 (depending on the release series)
+  `GIT_NO_LAZY_FETCH` is ignored, so a partial clone can fetch from its remote during the status
+  call, and a lazy fetch can run the transport the repository's own config names (a remote URL
+  with a helper, `core.sshCommand` and the like), which the scan does not cover; before 2.38 `safe.bareRepository` is ignored. Neither is detected by running
+  `git --version` on every render (a second subprocess). Treating `partialclone` and `promisor`
+  as untrusted in the scan was considered and not done: a partial clone is a normal repository
+  and plenty of people use one, so it would hide the marker for them, and the new gits already
+  stop the fetch.
+
+**Alternatives considered:** requiring the repo directory to be owned by the current user (cheap
+but platform-specific and does not cover a user who unpacked the archive themselves); dropping
+ahead/behind/dirty or making it opt-in (loses a feature for everyone to guard a narrow case);
+asking git to parse the config (`git config`) would add a second subprocess to every render. The
+scanner is a conservative header check, not a full config parser, and errs toward skipping the
+call.
+
+**Follow-up (2026-10-26): hashed cache keys and a failure marker.** Cache file names always end in
+a hash of the raw key (`git:/x/a.b` and `git:/x/a_b` used to share a file). A `git status` that
+fails or times out now stores `{ "failed": true }`, and for 30 seconds the call is skipped
+(branch only, no marker), so a repository whose status never finishes in 400 ms does not pay that
+on every render. Two consequences, both accepted: a single transient failure (a cold disk cache,
+say) hides the marker for up to 30 seconds; and when the failure happens while a good result 5 to
+60 seconds old exists, that result is served and kept, and no marker is written, so a slow
+repository still pays the 400 ms timeout on each render until that result ages out (then the
+marker takes over). The trust scan above still runs before the cache is read, and a failure
+marker holds nothing a repository could influence.
+
 ### D21. Surrogate-pair-unsafe truncation fixed in three segments
 
 `truncateBranch` (`git.js`), `decorate` (`task.js`), and `truncate` (`subagents.js`) all
@@ -474,6 +579,9 @@ installer) when it resolves to a real file, falling back to `node` otherwise.
 since nvm doesn't delete prior versions on a version switch — it only breaks if that specific
 version is later uninstalled, which is rarer than the PATH gap it fixes. Unverified on real
 macOS/Linux hardware; flagged for confirmation alongside D18.
+
+**Amended by D44:** Homebrew and the other version managers break that trade-off, so a stable
+PATH entry for the same binary is now preferred when one exists.
 
 ### D28. `install.js` preserves `settings.json`'s file mode and symlink identity
 
@@ -863,8 +971,8 @@ use shows what the right number is.
 - *De-escalating when little time is left.* Not possible with a projection (see above). A
   different rule would be needed and nobody has asked for one.
 - *Uncapped.* See the cap above.
-- *Default on.* It changes colors people already see. It ships off, and the default is to be
-  revisited in v0.8.0 after real use.
+- *Default on.* It changes colors people already see. It ships off. The default is fixed at
+  `false` for 1.0 (D46).
 - *Applying it to the context bar.* Context is not a time window, so there is no elapsed
   fraction to project from.
 - *A separate hue for "projected".* That would blend the identity and urgency scales, which
@@ -890,8 +998,9 @@ The OUTPUT format was never checked against Claude Code. Claude Code's documenta
 ("Subagent status lines" on the statusline page) says the command writes one JSON line per
 row, `{"id": "<task id>", "content": "<row body>"}`, with the task's `id` echoed, and that a
 row with no `id` keeps the default rendering. Under that contract the bare text rows carried
-no id and were most likely ignored, so `subagentStatusLine` would have changed nothing. It was
-found by comparing against another statusline's implementation, not by a test or a report.
+no id and were most likely ignored, so `subagentStatusLine` would have changed nothing. No
+test or report had caught it: the output side was written from the plan and never checked
+against the documentation.
 
 **Decision:** `renderSubagentLine` emits `JSON.stringify({ id, content }) + "\n"` for each task
 whose `id` is a non-empty string, and nothing for any other task, which keeps Claude Code's
@@ -928,6 +1037,10 @@ the omission rules, hostile labels and `NO_COLOR`. **Not verified live:** that C
 renders these rows in the agent panel. This is to be amended after that check. Also unknown is
 which Claude Code version introduced the JSON contract, so a user on a much older version may
 see a difference.
+
+**Follow-up (2026-10-25).** The maintainer, Carter, confirmed in a live Claude Code session that
+the `{"id","content"}` rows render in the agent panel. That settles the "not verified live" item
+above; the unknown about which Claude Code version introduced the JSON contract stands.
 
 ### D42. Values from outside are type- and range-checked, not only sanitized
 
@@ -1006,6 +1119,13 @@ override and zero-width characters, which `sanitize()` does not strip, and the w
 characters outside the old wide-character ranges. The suite is also green with `NO_COLOR`
 exported in the developer's shell.
 
+**Follow-up (2026-10-26), compatibility policy for the `task` segment.** The `task` segment reads
+Claude Code's local todo files, and where those live is an undocumented convention, not a
+documented interface of Claude Code. It is therefore best-effort and outside ampline's
+compatibility promise: if Claude Code moves or reshapes the files, the segment may render
+nothing (it already returns null instead of throwing) and that is not a breaking change in
+ampline. This is a policy, not something that was verified.
+
 ### D43. `sanitize()` also strips bidirectional and invisible characters, and cell width counts them right
 
 D42 recorded these as not covered. A terminal control sequence is not the only way foreign text
@@ -1049,3 +1169,217 @@ each rendered field and a hostile `.git/HEAD` and todo are covered by tests, and
 matrix that un-strips each range, over-strips the joiners, and removes each width range fails
 the suite. **Not verified:** the visual reordering on a real bidi terminal, and the width of
 code points outside the ranges listed, since the table is deliberately minimal.
+
+### D44. The installer refuses to rewrite without a backup, matches only its own commands, and prefers a durable node path
+
+A review of `lib/install.js`, the one module that can destroy a user's configuration, found
+four ways it could do the wrong thing quietly, and that nothing tested it.
+
+- **Backups.** `pruneBackups` removed every file that started with `settings.json.backup.`
+  beyond the newest five, including copies the user made by hand, and `backup()` returned
+  `null` on any failure, after which install and uninstall rewrote `settings.json` anyway. Now
+  only the exact stamp ampline writes is pruned (sorted by name, which is chronological), and a
+  failed backup of an existing file stops the run with exit 1 and a message, before anything is
+  changed: the install takes its backup right after the first read, before the runtime is copied,
+  so a failure leaves the runtime copy as it was too. Uninstall does the same, and removes nothing.
+- **Which commands are ours.** `pointsAtUs` accepted any command that contained
+  `ampline-claude`, so a user's `~/bin/ampline-claude-wrap.sh` was deleted by uninstall and
+  replaced by install without a notice. It now accepts only a node interpreter (bare, or an
+  absolute path to a file named `node`, `nodejs` or a versioned name such as `node24`, `node-24.1`
+  or `node-v24.1.0`, with an optional `.exe`, and nothing else after the name, so
+  `node2-wrapper.sh` and `node24.cmd` are foreign; the file name of the running Node is accepted
+  too, since that is what install writes) followed by the quoted installed entry,
+  `<dir>/hooks/ampline-claude/bin/ampline-claude.js`, with or without `--subagent`; the
+  README's manual-install shape matches. Anything else is foreign. Install announces a foreign
+  entry (now for `subagentStatusLine` as well as `statusLine`) and replaces it after a backup.
+  Uninstall leaves it alone, and keeps the runtime copy and cache whenever a foreign entry that
+  still names `ampline-claude` remains (a wrapper around the installed copy), including when
+  uninstall removed the other entry. A foreign entry that has nothing to do with ampline does not
+  keep the runtime when one of ours was removed; when nothing of ours was found and a foreign
+  entry exists, uninstall touches nothing at all.
+- **Node path (amends D27).** D27 wrote `process.execPath`. Node resolves that through
+  realpath, so Homebrew gives `/opt/homebrew/Cellar/node/<version>/bin/node`, and `brew
+  upgrade` plus its cleanup deletes it: the statusline goes blank with no message, the failure
+  D27 set out to prevent. `chooseNodePath` (pure, with `execPath`, the PATH entries, `realpath`
+  and the file check injected) now does this: if `execPath` is in a versioned directory (Homebrew
+  `Cellar`; nvm, fnm, volta, asdf, nodenv, mise, snap revisions) it looks through PATH for a
+  `node` whose realpath is the same file and whose own path is not in such a directory, and
+  writes that one. If there is none, it writes the real file behind `execPath` when that is not
+  versioned either, and otherwise keeps `execPath`. A PATH entry inside a version directory is
+  skipped, because it is no more durable, and fnm's per-shell `fnm_multishells` symlinks are
+  skipped because they disappear at reboot.
+- **Output contract.** The website embeds the installer's output verbatim and compares it in CI,
+  so a normal install prints exactly the six lines v0.6.0 printed. Everything new is shown only
+  when it applies, and the list is built by a pure function, `installMessages`: an optional
+  `replacing an existing statusLine command:` notice (then the same for `subagentStatusLine`),
+  `✓ ampline-claude installed.`, then, only when the Node choice is notable (`execPath` is in a
+  versioned directory, or the bare `node` fallback was used), `  Node: <path written>` and
+  a note that says to re-run `npx ampline-claude --install` after upgrading Node, then
+  `  Previous settings backed up to <name>` only when a settings file existed, a blank line, the
+  restart line, a blank line, the Customize line and the URL. When a stable PATH entry or a real
+  file was written, `execPath` is necessarily versioned, so one test covers every case.
+- **Smaller.** The settings temp file is created with the target's mode (it could be readable by
+  more users for an instant, and an old file at that name is removed rather than written
+  through). `ampline-claude.new-<pid>` and `.old-<pid>` directories are removed on install and
+  uninstall only when they are older than a minute and their process no longer exists
+  (`kill(pid, 0)` reporting `ESRCH`; `EPERM` counts as alive), so a second installer that is
+  still running is never disturbed. `settings.json` is read again right before the final write
+  and the entries are merged into that copy, which shrinks, but does not remove, the window in
+  which Claude Code's own write could be lost; the backup is of the first read. Uninstall when
+  `settings.json` has no ampline entries still deletes the runtime copy and cache and says so,
+  unless a different statusline is configured.
+
+**Tests.** `test/installer.js` runs the real binary in `mkdtemp` homes, with `CLAUDE_CONFIG_DIR`
+removed and the working directory inside the home, and covers install, re-install, a foreign
+entry, a wrapper script, an unparseable file, a symlinked file, file mode, pruning, uninstall in
+each state, stale staging, the output contract, and `--help`/`--version`. In-process tests load
+`lib/install.js` against a throwaway `CLAUDE_CONFIG_DIR` (set before `require`, never unset) and
+wrap or fail `fs` calls to reach what a spawned run cannot on every OS: a failed backup, the
+mode the temp file is created with, an edit to `settings.json` made mid-install, and a failed
+swap with its rollback. The spawned-render helpers in `test/run.js` also drop `CLAUDE_CONFIG_DIR`
+and use the throwaway home as the working directory, and every throwaway home starts with an
+empty `.amplinerc.json`. That ends the config walk-up at the home for any render whose directory
+is the home or inside it, so a `.amplinerc.json` in the user profile above `os.tmpdir()` cannot
+change a result. A payload whose `cwd` is elsewhere (a fixture's `/tmp/project`) still walks that
+directory's own ancestors first.
+
+**Rejected:**
+- *Always writing a bare `node`.* Brings back the blank statusline under a GUI launch that D27 fixed.
+- *Following version-manager shims (volta's, asdf's) to the "stable" path.* A shim is a different
+  file from the real binary, so "same binary" cannot be shown; the versioned path is kept.
+- *Warning on a failed backup and continuing.* The README promises a backup first.
+
+**Not verified:** Homebrew, nvm-windows and the other version managers were exercised only through
+injected paths. No Mac was available, as for D27.
+
+### D45. `package.json` declares `exports`: `lib/` is internal, only `package.json` is importable
+
+Until now every file under `lib/` could be required by path (`require('ampline-claude/lib/colors')`),
+which made each module look like public API. The only public surface ampline will freeze at 1.0 is
+the command line, the `.amplinerc.json` keys, the stdin fields it reads, the exit code of the render
+path and the subagent `{"id","content"}` lines. Module paths, function signatures, exact glyphs, hex
+colors, spacing and labels are not part of it. The "Frozen module interfaces" in `CLAUDE.md` are
+frozen for contributors, not for importers.
+
+**Decision:** add `"exports": { "./package.json": "./package.json" }` and keep `main` absent (D29).
+With an `exports` field Node refuses any path not listed, so `require('ampline-claude/lib/...')` and
+`require('ampline-claude')` now throw `ERR_PACKAGE_PATH_NOT_EXPORTED`. `package.json` is exported because tools read it
+(`require('ampline-claude/package.json').version`) and because bundlers and some package managers
+look for it.
+
+**`bin` is unaffected.** `exports` governs how a package specifier is resolved by `require` and
+`import`. The `bin` entry is a file path that npm links or `npx` runs directly, and the file's own
+relative requires (`../lib/...`) are ordinary file paths too, so `npx ampline-claude`, the installed
+`ampline-claude` command, and the statusline command the installer writes keep working. The
+installer's command is `node <dir>/hooks/ampline-claude/bin/ampline-claude.js`, a file path.
+
+**The sister website is not affected.** Its sync script reads an explicit list of files (its
+`VENDORED` list) from `node_modules/ampline-claude/lib/`, plus `package.json`, from disk with
+`readFileSync` and wraps them itself; it never `require`s or `import`s the package by name, so
+`exports` does not apply to it. That arrangement is why `lib/` stays a flat set of files with
+CommonJS source that can be copied verbatim. Because the list is explicit, a new module under
+`lib/` (such as `safeRead.js`) has to be added to it on the website side, or the website's
+runtime fails to find it.
+
+**Tests.** `test/run.js` copies the files npm would ship (the `files` allowlist) into
+`node_modules/ampline-claude` under a throwaway directory and resolves the package from a consumer
+there: `package.json` still loads, `lib/` and `bin/` package paths are refused with
+`ERR_PACKAGE_PATH_NOT_EXPORTED`, and the copied CLI still prints `--version` and renders a
+statusline. `scripts/verify-pack.js` asserts the field exists, lists only `./package.json`, and that
+there is still no `main`.
+
+**Rejected:**
+- *Leaving `lib/` importable and saying "unsupported" in the docs.* A path that works is a path
+  somebody depends on; only the field makes "internal" true.
+- *Exporting `lib/*` for convenience.* That is the surface this decision removes.
+- *Adding a `main` with a small programmatic API.* Nobody asked for one, and every export is a
+  commitment at 1.0 (see D29 for why `main` was dropped).
+
+### D46. `paceColors` stays opt-in with default `false` for 1.0; its tuning is not part of the contract
+
+D40 shipped `paceColors` off and left the default "to be revisited in v0.8.0 after real use". 1.0 is
+the point where the default is frozen, so the question has to be closed.
+
+**Decision:** the default stays `false`. `"paceColors": true` remains a recognized `.amplinerc.json`
+key and its meaning is stable: the 5-hour and weekly bars may be colored by projected pace, never
+calmer than the plain ramp. What is **not** part of the contract is how the projection is
+tuned: the 10% deadband, the cap at 84, and the straight-line projection itself can change in a
+minor release, because they are tuning of an opt-in color choice and the soft spot D40 describes
+(8% used at 11% elapsed on the weekly bar reads orange) has had no live-use evidence either way.
+
+**Why not default on.** It changes colors that people already see, and the usefulness of the
+signal has not been shown. Opt-in costs nothing: people who want it set one key.
+
+**Why not remove it.** It is documented, covered by tests and a mutation matrix, and harmless when
+off. Removing a key is the kind of change 1.0 is meant to make rarer.
+
+**Not verified:** whether the signal is useful or noisy in live work, as in D40.
+
+### D47. What the maintainer has confirmed live, and which inputs are best-effort (2026-10-25)
+
+Recorded as the maintainer's confirmations, not as results of this repository's tests:
+
+- On 2026-10-25 Carter confirmed that the subagent `{"id","content"}` rows render in a live Claude
+  Code session (see the D41 follow-up).
+- On the same date Carter confirmed that `main` renders correctly on a real Mac and on Windows.
+  This extends D39's and D40's earlier "not yet verified" notes for macOS terminals and fonts; it
+  does not cover a terminal or font Carter did not name.
+- The `task` segment's input, Claude Code's local todo files, is an undocumented convention. It is
+  best-effort and outside the compatibility promise (see the D42 follow-up).
+
+### D48. The 1.0 limits on what a checkout can feed ampline, and the config walk-up that is not narrowed (2026-10-26)
+
+A `.amplinerc.json`, a `.git` file, `HEAD` and a repository's own git config all come from a
+directory the user may have only just cloned or unpacked, and stdin comes from another program. At
+1.0 these limits are frozen as part of how ampline treats that input. They are the limits the
+pre-1.0 hardening branch landed; none of them is a promise about rendering, only a bound on the work
+and the output.
+
+**Decision:**
+- `separator` is cut to 16 code points (the work done before that cut is itself bounded to 4,096
+  characters), and a separator that is not a string falls back to the default.
+- `maxBranchLength` and `maxTaskLength` are floored and clamped at 200; a value under 5, or one
+  that is not a finite number, falls back to the default (24 and 40). `segments` keeps each name
+  once (nine at most), unknown names are dropped.
+- `.amplinerc.json`, a `.git` file and `HEAD` are read only if they are regular files of at most
+  64 KB (checked on the path, then again on the open descriptor, which is opened non-blocking where
+  the platform has `O_NONBLOCK`). A repository's own git config is read up to 256 KB. A symlink to a
+  device or a FIFO, an oversized file and an unreadable file count as absent, or, for the git config,
+  as untrusted.
+- stdin is read up to 8 million characters (UTF-16 units of the decoded text, about 8 MB for
+  ASCII). Past that nothing is rendered and the exit code stays 0.
+- The config search and the git repository search each check at most 30 directories, starting with
+  the session directory, and the config search then tries the home directory.
+
+**Why:** a config file loads automatically from any checkout, so every value it carries is bounded
+before it reaches the line, and every read is of a small regular file so a hostile checkout cannot
+make a render hang (a FIFO or `/dev/zero`) or flood (a huge file). The numbers are ceilings
+generous enough that no real setup meets them (a separator of 16 code points, branch names of 200
+characters, a 64 KB config) and small enough to keep the work per render trivial. The two walks
+share one depth so that the repository ampline shows a branch for and the config it applies cannot
+disagree about how far up the tree is looked.
+
+**Accepted residual, not implemented: the config walk-up through other people's directories.** The
+config search climbs from the session directory toward the root, so with a session directory such
+as `/tmp/x/y` it can load `/tmp/.amplinerc.json`, a file any local user could have planted in a
+shared directory. Two ways to narrow it were considered and not taken:
+- *Checking that each directory, or the file, is owned by the current user.* Ownership and the
+  sticky-bit rules of shared directories behave differently on macOS, Linux and Windows, and the
+  check would need per-OS branches that cannot all be tested here. A check that is right on one OS
+  and silently off on another is worse than a documented residual.
+- *Stopping the walk at the home directory or the first `.git` entry.* That changes where a config
+  is found, which is part of the frozen public surface (`.amplinerc.json` in a project root or the
+  home directory, nearest wins).
+
+It is accepted because what a config can do is display-only: it picks which segments show, their
+order, where the second line starts, the separator, two truncation lengths, the color
+switch and `paceColors`. None of it names a path or a
+command, and every value is validated and bounded as above, so the worst a planted file does is
+make the line look different. After the depth cap (30 directories) and the bounded reads,
+reading it costs nothing a user would notice. This is the same trust the user places in a
+repository's own `.amplinerc.json`, widened to a shared parent directory.
+
+**Alternatives considered:** a configurable depth (more surface to freeze); validating the whole
+file against a schema with unknown-key errors (a typo in a hand-written config would blank the
+statusline instead of being ignored); sandboxing the read with a child process (a subprocess per
+render for a display setting).

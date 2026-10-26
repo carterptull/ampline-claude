@@ -3,6 +3,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { runInstallerTests } = require('./installer');
+
+// In-process requires must not see a developer's redirected config dir either.
+delete process.env.CLAUDE_CONFIG_DIR;
 
 const ROOT = path.join(__dirname, '..');
 const BIN = path.join(ROOT, 'bin', 'ampline-claude.js');
@@ -12,10 +16,43 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 // enough: an earlier fixture with live rate_limits legitimately write-throughs
 // a cache entry that a later fixture (e.g. no-rate-limits.json) would then
 // inherit. Per-fixture isolation is what makes each scenario independent.
-function makeTempHome() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-home-'));
+//
+// The home gets an empty `.amplinerc.json` ({} means "all defaults"). The config walk goes from the
+// working directory upward and the first file found wins, so for any render whose directory is the
+// home or inside it, this file ends the walk here. Without it the walk continues into the parents,
+// and on Windows os.tmpdir() lives inside the user profile, which can hold the developer's own
+// .amplinerc.json. Seeded tests overwrite it. A payload whose cwd is somewhere else entirely (a
+// fixture's /tmp/project) still walks that directory's own ancestors first, then this home.
+// `parent` exists so a test can place a home under a directory it controls.
+function makeTempHome(parent = os.tmpdir()) {
+  const dir = fs.mkdtempSync(path.join(parent, 'ampline-test-home-'));
   fs.mkdirSync(path.join(dir, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.amplinerc.json'), '{}\n', 'utf8');
   return dir;
+}
+
+// A copy of the developer's environment with everything that steers ampline removed. A
+// CLAUDE_CONFIG_DIR left in place would send every spawned render's cache and todo reads to the
+// developer's real config directory, and NO_COLOR / FORCE_COLOR would make color assertions pass
+// vacuously. Tests that want one of them pass it through the spawn's `env` overlay.
+function cleanEnv() {
+  const base = { ...process.env };
+  delete base.NO_COLOR;
+  delete base.FORCE_COLOR;
+  delete base.CLAUDE_CONFIG_DIR;
+  return base;
+}
+
+// Options for the short `node -e` helper children that load one lib module by absolute path:
+// a clean environment and a throwaway home as HOME and cwd, so nothing they load can reach the
+// developer's real home. One shared directory, removed when the run ends.
+let scratchHome = null;
+function childOptions(extraEnv) {
+  if (!scratchHome) scratchHome = makeTempHome();
+  return {
+    encoding: 'utf8', timeout: 10000, cwd: scratchHome,
+    env: { ...cleanEnv(), HOME: scratchHome, USERPROFILE: scratchHome, ...(extraEnv || {}) },
+  };
 }
 
 // Config-file loading and the todos-backed task segment read from the
@@ -91,13 +128,14 @@ function spawnRender(input, { args = [BIN], seed, env = {} } = {}) {
   // A developer's exported NO_COLOR / FORCE_COLOR must not leak into the child:
   // with color off, no escape is ever emitted, so every "no link" and "no stray
   // escape" assertion would pass vacuously. Tests that want it pass it via `env`.
-  const base = { ...process.env };
-  delete base.NO_COLOR;
-  delete base.FORCE_COLOR;
+  // CLAUDE_CONFIG_DIR is scrubbed too (see cleanEnv), and cwd is the throwaway home, never the
+  // repo: a walk-up from the repo root would pass through the developer's own .amplinerc.json.
+  const base = cleanEnv();
   const res = spawnSync(process.execPath, args, {
     input,
     encoding: 'utf8',
     timeout: 10000,
+    cwd: home,
     env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '120', ...env },
   });
   try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
@@ -407,10 +445,7 @@ function runBarMarkerTests() {
   // colors on, the 8 cells are one contiguous run ending in the single closing reset.
   const colorChild = spawnSync(process.execPath, ['-e',
     "const {renderBar}=require(process.argv[1]);process.stdout.write(JSON.stringify([renderBar('H',60,{marker:0.5}),renderBar('H',97,{marker:0.5})]))",
-    path.join(ROOT, 'lib', 'bar.js')], {
-    encoding: 'utf8', timeout: 10000,
-    env: (() => { const e = { ...process.env }; delete e.NO_COLOR; return e; })(),
-  });
+    path.join(ROOT, 'lib', 'bar.js')], childOptions());
   let colored = [];
   try { colored = JSON.parse(colorChild.stdout || '[]'); } catch {}
   check('colors-on output has escapes (the styling test is not vacuous)',
@@ -453,9 +488,7 @@ function runBarMarkerTests() {
   // NO_COLOR proof: a real child process with colors off must still show the marker, with no escapes.
   const child = spawnSync(process.execPath, ['-e',
     "const {renderBar}=require(process.argv[1]);process.stdout.write(renderBar('H',97,{marker:0.5}))",
-    path.join(ROOT, 'lib', 'bar.js')], {
-    encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' }, timeout: 10000,
-  });
+    path.join(ROOT, 'lib', 'bar.js')], childOptions({ NO_COLOR: '1' }));
   const out = child.stdout || '';
   check('marker still shows with NO_COLOR and emits no escapes', out.includes(MARK) && !/\x1b/.test(out), JSON.stringify(out));
 }
@@ -563,11 +596,9 @@ function runPaceColorTests() {
 
   // renderBar: rampPct changes only the color the ramp is read at.
   const child = (expr) => {
-    const env = { ...process.env };
-    delete env.NO_COLOR;
     const r = spawnSync(process.execPath, ['-e',
       `const B=require(process.argv[1]+'/lib/bar.js');process.stdout.write(JSON.stringify(${expr}))`, ROOT],
-    { encoding: 'utf8', env, timeout: 10000 });
+    childOptions());
     try { return JSON.parse(r.stdout); } catch { return null; }
   };
   const GREEN = sgr([96, 200, 120]);
@@ -637,13 +668,11 @@ function runPaceColorTests() {
   // A segment handed config that never went through validateAndMerge must still
   // only act on a literal `true`.
   const segChild = (config) => {
-    const env = { ...process.env };
-    delete env.NO_COLOR;
     const reset = Date.now() + 4 * 60 * 60 * 1000;
     const r = spawnSync(process.execPath, ['-e',
       `const S=require(process.argv[1]+'/lib/segments/rateLimits.js');
        process.stdout.write(JSON.stringify(S.renderFiveHourSegment({usage:{fiveHour:{percentage:40,resetsAtMs:${reset}},weekly:null,stale:false},config:${JSON.stringify(config)}})))`, ROOT],
-    { encoding: 'utf8', env, timeout: 10000 });
+    childOptions());
     try { return JSON.parse(r.stdout); } catch { return null; }
   };
   check('segment given paceColors: true uses pace', String(segChild({ paceColors: true })).startsWith(ORANGE), JSON.stringify(segChild({ paceColors: true })));
@@ -659,7 +688,7 @@ function runPaceColorTests() {
     withPace(home);
     const dir = path.join(home, '.claude', 'cache', 'ampline');
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'usage.json'),
+    fs.writeFileSync(path.join(dir, require('../lib/cache').safeKey('usage') + '.json'),
       JSON.stringify({ fiveHour: { percentage: 40, resetsAtMs: Date.now() + 4 * 3600 * 1000 }, weekly: null }), 'utf8');
   };
   runInline('binary: cached (stale) usage ignores pace color and marker even with paceColors on',
@@ -809,13 +838,11 @@ function runSubagentContractTests() {
   // Expected rows come from a child with colors on, so a developer's exported NO_COLOR
   // cannot make an in-process module disagree with the (NO_COLOR-scrubbed) child output.
   const expectedRows = (() => {
-    const env = { ...process.env };
-    delete env.NO_COLOR;
     const r = spawnSync(process.execPath, ['-e',
       "const {renderTaskRow}=require(process.argv[1]+'/lib/segments/subagents.js');" +
       "const f=JSON.parse(require('fs').readFileSync(process.argv[2],'utf8'));" +
       'process.stdout.write(JSON.stringify(f.tasks.map((t)=>renderTaskRow(t,f.columns))))',
-      ROOT, path.join(FIXTURES, 'subagent-tasks.json')], { encoding: 'utf8', env, timeout: 10000 });
+      ROOT, path.join(FIXTURES, 'subagent-tasks.json')], childOptions());
     try { return JSON.parse(r.stdout); } catch { return null; }
   })();
   check('each content is the row text renderTaskRow produces',
@@ -1134,14 +1161,12 @@ function runInjectionTests() {
 function renderSequence(payloads, { seed, env, cwd } = {}) {
   const home = makeTempHome();
   if (seed) seed(home);
-  const base = { ...process.env };
-  delete base.NO_COLOR;
-  delete base.FORCE_COLOR;
+  const base = cleanEnv();
   const results = [];
   try {
     for (const p of payloads) {
       const r = spawnSync(process.execPath, [BIN], {
-        input: JSON.stringify(p), encoding: 'utf8', timeout: 20000, cwd,
+        input: JSON.stringify(p), encoding: 'utf8', timeout: 20000, cwd: cwd || home,
         env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200', ...(env || {}) },
       });
       results.push({ status: r.status, out: r.stdout || '' });
@@ -1266,10 +1291,11 @@ function runInjectionFollowupTests() {
 
   // F6: shortenModel used an unanchored regex that starts with \s*, quadratic on whitespace runs.
   for (const n of [100000, 400000]) {
-    const t0 = Date.now();
+    // No wall-clock bound: a quadratic regex takes minutes here, so it would hit the 20 s spawn
+    // timeout and the status would not be 0. That is a deterministic failure, where a tight
+    // millisecond limit would flake on a slow CI runner.
     const o = renderSequence([inlinePayload({ model: { id: 'claude-sonnet-5-5', display_name: 'a' + ' '.repeat(n) } })])[0];
-    const ms = Date.now() - t0;
-    check('a ' + n + ' space display_name renders promptly', o.status === 0 && ms < 4000, 'status=' + o.status + ' ms=' + ms);
+    check('a ' + n + ' space display_name renders before the spawn timeout', o.status === 0 && o.out.length > 0, 'status=' + o.status);
   }
   const ctxName = (dn) => plain(renderSequence([inlinePayload({ model: { id: 'claude-opus-5-5', display_name: dn } })])[0].out);
   check('a trailing context note is still removed', ctxName('Opus 4.5 (1M context)').includes('Opus 4.5 │') && !/context/.test(ctxName('Opus 4.5 (1M context)')),
@@ -1438,6 +1464,70 @@ function runInvisibleCharacterTests() {
 // ---- Source files must not hide text from a reader ("Trojan Source") -----------------
 // A bidirectional override or a zero-width character inside a source file or document makes
 // the code a reviewer sees differ from the code that runs. None belong in this repository.
+// D45: `exports` makes `lib/` internal. Proven from outside the repo: the files npm would ship
+// (the `files` allowlist) are copied into `<tmp>/node_modules/ampline-claude`, then a consumer in
+// <tmp> resolves it the way a real install would. `package.json` stays reachable, every `lib/`
+// path is refused, and the CLI still runs (a bin path is a file path, so `exports` does not
+// apply to it).
+function runExportsTests() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const only = pkg.exports && typeof pkg.exports === 'object' ? Object.keys(pkg.exports) : [];
+  if (only.length !== 1 || only[0] !== './package.json' || pkg.exports['./package.json'] !== './package.json') {
+    fail('exports: package.json exports only ./package.json', JSON.stringify(pkg.exports));
+    return;
+  }
+  if ('main' in pkg) { fail('exports: no main field (D29)', 'main is set'); return; }
+  console.log('  ok    exports: only ./package.json is exported, and there is no main');
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-exports-'));
+  try {
+    const installed = path.join(tmp, 'node_modules', 'ampline-claude');
+    fs.mkdirSync(installed, { recursive: true });
+    fs.copyFileSync(path.join(ROOT, 'package.json'), path.join(installed, 'package.json'));
+    for (const entry of pkg.files) {
+      const from = path.join(ROOT, entry);
+      if (fs.existsSync(from)) fs.cpSync(from, path.join(installed, entry), { recursive: true });
+    }
+
+    const script = [
+      "const out = {};",
+      "out.version = require('ampline-claude/package.json').version;",
+      "for (const id of ['ampline-claude', 'ampline-claude/lib/colors', 'ampline-claude/lib/render.js', 'ampline-claude/lib/segments/git', 'ampline-claude/bin/ampline-claude.js']) {",
+      "  try { require.resolve(id); out[id] = 'resolved'; } catch (e) { out[id] = e.code; }",
+      "}",
+      "process.stdout.write(JSON.stringify(out));",
+    ].join('\n');
+    const res = spawnSync(process.execPath, ['-e', script], { ...childOptions(), cwd: tmp, encoding: 'utf8', timeout: 10000 });
+    let out = null;
+    try { out = JSON.parse(res.stdout); } catch {}
+    if (!out) { fail('exports: consumer resolution ran', `exit ${res.status} ${res.stderr}`); return; }
+    if (out.version !== pkg.version) fail('exports: require("ampline-claude/package.json") still works', JSON.stringify(out));
+    else console.log('  ok    exports: require("ampline-claude/package.json") still works');
+    const refused = ['ampline-claude/lib/colors', 'ampline-claude/lib/render.js', 'ampline-claude/lib/segments/git', 'ampline-claude/bin/ampline-claude.js'];
+    const notRefused = refused.filter((id) => out[id] !== 'ERR_PACKAGE_PATH_NOT_EXPORTED');
+    if (notRefused.length) fail('exports: lib/ and bin/ are refused as package paths', JSON.stringify(out));
+    else console.log('  ok    exports: lib/ and bin/ paths throw ERR_PACKAGE_PATH_NOT_EXPORTED');
+    // No `main` and no `.` export: the bare name is refused too.
+    if (out['ampline-claude'] !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') fail('exports: bare require("ampline-claude") is refused', JSON.stringify(out));
+    else console.log('  ok    exports: bare require("ampline-claude") throws ERR_PACKAGE_PATH_NOT_EXPORTED');
+
+    // The CLI is addressed by file path (what the .bin shim and `npx` run), so it still works.
+    const bin = path.join(installed, 'bin', 'ampline-claude.js');
+    const version = spawnSync(process.execPath, [bin, '--version'], { ...childOptions(), cwd: tmp });
+    if (version.status !== 0 || version.stdout.trim() !== pkg.version) {
+      fail('exports: installed CLI --version', `exit ${version.status} out ${JSON.stringify(version.stdout)} err ${version.stderr}`);
+    } else console.log('  ok    exports: the installed CLI still runs --version');
+    const render = spawnSync(process.execPath, [bin], {
+      ...childOptions({ COLUMNS: '120', NO_COLOR: '1' }), cwd: tmp,
+      input: fs.readFileSync(path.join(FIXTURES, 'full.json'), 'utf8'),
+    });
+    if (render.status !== 0 || !render.stdout.trim()) fail('exports: installed CLI renders a statusline', `exit ${render.status} err ${render.stderr}`);
+    else console.log('  ok    exports: the installed CLI still renders a statusline');
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+  }
+}
+
 function runSourceHygieneTests() {
   const roots = ['bin', 'lib', 'test', 'scripts', '.github', 'diagrams'];
   const rootFiles = ['README.md', 'CHANGELOG.md', 'CLAUDE.md', 'DECISIONS.md', 'SECURITY.md', 'package.json', 'LICENSE'];
@@ -1473,6 +1563,1044 @@ function runSourceHygieneTests() {
   else fail('source hygiene: invisible or bidirectional characters found', hits.slice(0, 12).join(', '));
 }
 
+// A repo-local .amplinerc.json loads automatically from any checkout, so every value in it is
+// attacker-shaped input: bounded in length, count and size, and read only if it is a small
+// regular file. The git reads (.git file, HEAD) follow the same rule.
+function runConfigHardeningTests() {
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    config hardening: ' + name);
+    else fail('config hardening: ' + name, detail);
+  };
+  const { validateAndMerge, DEFAULT_CONFIG } = require('../lib/config');
+  const plain = (o) => String(o).replace(/\x1b\[[0-9;]*m/g, '');
+  const cps = (s) => Array.from(s).length;
+
+  // segments: each name at most once (first occurrence wins), so at most nine entries.
+  const dup = validateAndMerge({ segments: ['git', 'dir', 'git', 'bogus', 'dir', 'model', 'git'] }).segments;
+  check('duplicate segments keep the first occurrence', JSON.stringify(dup) === JSON.stringify(['git', 'dir', 'model']), JSON.stringify(dup));
+  const big = validateAndMerge({ segments: new Array(20000).fill('git') }).segments;
+  check('20,000 duplicate segments collapse to one', big.length === 1 && big[0] === 'git', String(big.length));
+  const all = validateAndMerge({ segments: DEFAULT_CONFIG.segments.concat(DEFAULT_CONFIG.segments) }).segments;
+  check('at most nine segments', all.length === 9, String(all.length));
+  check('only unknown names still means the default',
+    JSON.stringify(validateAndMerge({ segments: ['x', 'y'] }).segments) === JSON.stringify(DEFAULT_CONFIG.segments), 'expected default');
+  check('an empty list still means the default',
+    JSON.stringify(validateAndMerge({ segments: [] }).segments) === JSON.stringify(DEFAULT_CONFIG.segments), 'expected default');
+
+  // separator: 16 code points at most, counted after sanitizing, never splitting an emoji.
+  const sep = (s) => validateAndMerge({ separator: s }).separator;
+  check('a 16-code-point separator is kept whole', sep('x'.repeat(16)) === 'x'.repeat(16), sep('x'.repeat(16)));
+  check('a 17-code-point separator is cut to 16', sep('x'.repeat(17)) === 'x'.repeat(16), sep('x'.repeat(17)));
+  const rocket = String.fromCodePoint(0x1f680);
+  const emojiSep = sep(rocket.repeat(40));
+  check('emoji are counted by code point and never split', cps(emojiSep) === 16 && emojiSep === rocket.repeat(16), String(cps(emojiSep)));
+  const escSep = sep((ESC + '[31m').repeat(10) + 'ab');
+  check('control characters are removed before the cap counts', escSep === '[31m'.repeat(4), JSON.stringify(escSep));
+  check('a multi-megabyte separator is bounded', cps(sep('~'.repeat(5 * 1024 * 1024))) === 16, 'expected 16 code points');
+
+  // maxBranchLength / maxTaskLength: finite, floored, clamped to 5..200; below 5 or non-finite means the default.
+  for (const key of ['maxBranchLength', 'maxTaskLength']) {
+    const v = (x) => validateAndMerge({ [key]: x })[key];
+    check(key + ' keeps an in-range integer', v(30) === 30, String(v(30)));
+    check(key + ' floors a fraction', v(7.5) === 7, String(v(7.5)));
+    check(key + ' accepts the 5 floor', v(5) === 5 && v(5.9) === 5, String(v(5.9)));
+    check(key + ' accepts the 200 ceiling', v(200) === 200, String(v(200)));
+    check(key + ' clamps a huge value to 200', v(1e9) === 200 && v(201) === 200, String(v(1e9)));
+    check(key + ' below 5 means the default',
+      [4, 4.99, -1, 0].every((x) => v(x) === DEFAULT_CONFIG[key]), String(v(4.99)));
+    check(key + ' non-finite or non-number means the default',
+      [Infinity, -Infinity, NaN, '50', null, true, {}, []].every((x) => v(x) === DEFAULT_CONFIG[key]), 'expected default');
+  }
+
+  // readSmallTextFile: text for a small regular file, null for everything else, never a throw.
+  {
+    const { readSmallTextFile } = require('../lib/safeRead');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-test-safe-read-'));
+    try {
+      const f = (name, content) => { const p = path.join(dir, name); fs.writeFileSync(p, content); return p; };
+      check('safeRead returns a small file\'s text', readSmallTextFile(f('a', 'héllo')) === 'héllo', 'expected the text');
+      check('safeRead reads an empty file as an empty string', readSmallTextFile(f('e', '')) === '', 'expected empty string');
+      check('safeRead reads exactly the limit', readSmallTextFile(f('lim', 'a'.repeat(64 * 1024))) !== null, 'expected text');
+      check('safeRead rejects one byte over the limit', readSmallTextFile(f('over', 'a'.repeat(64 * 1024 + 1))) === null, 'expected null');
+      check('safeRead honors a custom limit', readSmallTextFile(f('c', 'abcd'), 3) === null && readSmallTextFile(f('c2', 'abc'), 3) === 'abc', 'custom limit');
+      check('safeRead returns null for a directory', readSmallTextFile(dir) === null, 'expected null');
+      check('safeRead returns null for a missing path', readSmallTextFile(path.join(dir, 'nope')) === null, 'expected null');
+      // The open itself must not block on a FIFO swapped in after the stat check.
+      const realOpen = fs.openSync;
+      const flagsSeen = [];
+      try {
+        fs.openSync = (p, flags, ...rest) => { flagsSeen.push(flags); return realOpen.call(fs, p, flags, ...rest); };
+        readSmallTextFile(f('nb', 'x'));
+      } finally { fs.openSync = realOpen; }
+      const nb = fs.constants.O_NONBLOCK || 0;
+      check('safeRead opens read-only and non-blocking (where the platform has O_NONBLOCK)',
+        flagsSeen.length === 1 && flagsSeen[0] === (fs.constants.O_RDONLY | nb) && (nb === 0 || (flagsSeen[0] & nb) === nb), JSON.stringify(flagsSeen));
+    } finally {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  // Through the real binary, with the config planted where a cloned repo would put it.
+  const repoHead = (dir) => {
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+  };
+  // `config` is written as the project's .amplinerc.json (a string is written verbatim);
+  // `seed(home, proj)` adds anything else; `input(home)` overrides the stdin payload.
+  const runIn = (config, { seed, input } = {}) => {
+    const home = makeTempHome();
+    const proj = path.join(home, 'proj');
+    fs.mkdirSync(proj, { recursive: true });
+    repoHead(proj);
+    if (config !== undefined) {
+      fs.writeFileSync(path.join(proj, '.amplinerc.json'), typeof config === 'string' ? config : JSON.stringify(config), 'utf8');
+    }
+    if (seed) seed(home, proj);
+    const base = cleanEnv();
+    const t0 = Date.now();
+    const res = spawnSync(process.execPath, [BIN], {
+      input: input ? input(home) : JSON.stringify(inlinePayload({ cwd: path.join(home, 'proj') })),
+      encoding: 'utf8', timeout: 20000, cwd: home,
+      env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200' },
+    });
+    const ms = Date.now() - t0;
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    return { res, ms, out: res.stdout || '' };
+  };
+
+  // Thousands of copies of "git" used to run the segment once each (the pre-1.0 review killed 20,000 at
+  // 60 s). The binary run uses the largest list that fits under the 64 KB config cap (9,000
+  // entries, about 54 KB; the 20,000 case is asserted above through validateAndMerge). The
+  // config ends in "model" and leaves out "dir": a config skipped for size would render the
+  // default line instead, which has the directory, so this also proves the config was loaded.
+  const dupConfig = JSON.stringify({ segments: new Array(9000).fill('git').concat('model') });
+  check('fixture fits under the 64 KB config cap', Buffer.byteLength(dupConfig) < 64 * 1024, String(Buffer.byteLength(dupConfig)));
+  const dupRun = runIn(dupConfig);
+  const branches = (plain(dupRun.out).match(/⎇/g) || []).length;
+  check('9,000 duplicate git segments exit 0, quickly, and render once',
+    dupRun.res.status === 0 && dupRun.ms < 8000 && branches === 1 &&
+    plain(dupRun.out).includes('Haiku') && !plain(dupRun.out).includes('proj'),
+    `status ${dupRun.res.status}, ${dupRun.ms} ms, ${branches} branches, error ${dupRun.res.error && dupRun.res.error.message}`);
+
+  // A huge separator used to be printed whole. (A 5 MB one is covered above through validateAndMerge;
+  // a config file that large is now skipped outright, so the binary gets the largest that still loads.)
+  const sepRun = runIn({ segments: ['model', 'context'], separator: '~'.repeat(60 * 1024) });
+  const longest = Math.max(0, ...(plain(sepRun.out).match(/~+/g) || []).map((m) => m.length));
+  check('a 60 KB separator prints at most 16 code points of it',
+    sepRun.res.status === 0 && longest > 0 && longest <= 16 && sepRun.out.length < 2000,
+    `status ${sepRun.res.status}, run of ${longest}, ${sepRun.out.length} chars`);
+
+  // maxTaskLength 1e9 used to print a 1 MB todo whole.
+  const todoSeed = (home) => {
+    const dir = path.join(home, '.claude', 'todos');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'cfg-hardening-agent-cfg-hardening.json'),
+      JSON.stringify([{ status: 'in_progress', content: 'x'.repeat(1024 * 1024) }]), 'utf8');
+  };
+  const taskRun = runIn({ segments: ['task'], maxTaskLength: 1e9 }, {
+    seed: todoSeed,
+    input: (home) => JSON.stringify(inlinePayload({ session_id: 'cfg-hardening', cwd: path.join(home, 'proj') })),
+  });
+  const xs = Math.max(0, ...(plain(taskRun.out).match(/x+/g) || []).map((m) => m.length));
+  check('maxTaskLength 1e9 prints at most 200 characters of a 1 MB todo',
+    taskRun.res.status === 0 && xs > 0 && xs <= 200 && plain(taskRun.out).includes('…'), `status ${taskRun.res.status}, run of ${xs}`);
+
+  // The config file itself: a directory, or anything over 64 KB, is skipped like a missing file
+  // and the walk continues to the next candidate (here the one in the home directory).
+  const homeCfg = (home) => fs.writeFileSync(path.join(home, '.amplinerc.json'), JSON.stringify({ separator: ' @@ ' }), 'utf8');
+  const onlyHome = runIn(undefined, { seed: homeCfg });
+  check('control: the home config applies when the project has none', plain(onlyHome.out).includes('@@'), JSON.stringify(plain(onlyHome.out)));
+
+  const dirRun = runIn(undefined, {
+    seed: (home, proj) => { homeCfg(home); fs.mkdirSync(path.join(proj, '.amplinerc.json')); },
+  });
+  check('a config path that is a directory is skipped and the walk continues',
+    dirRun.res.status === 0 && plain(dirRun.out).includes('@@'), JSON.stringify(plain(dirRun.out)));
+
+  // A valid JSON object of exactly `bytes` bytes whose separator is ' !! '.
+  const padded = (bytes) => {
+    const head = '{"separator":" !! ","pad":"';
+    return head + 'p'.repeat(bytes - Buffer.byteLength(head) - 2) + '"}';
+  };
+  const mb = padded(1024 * 1024);
+  check('fixture is exactly 1 MB', Buffer.byteLength(mb) === 1024 * 1024, String(Buffer.byteLength(mb)));
+  const bigRun = runIn(mb, { seed: homeCfg });
+  check('a 1 MB config is skipped and the walk continues',
+    bigRun.res.status === 0 && plain(bigRun.out).includes('@@') && !plain(bigRun.out).includes('!!'), JSON.stringify(plain(bigRun.out)));
+
+  const atLimit = padded(64 * 1024);
+  check('boundary fixture is exactly 64 KB', Buffer.byteLength(atLimit) === 64 * 1024, String(Buffer.byteLength(atLimit)));
+  const limitRun = runIn(atLimit, { seed: homeCfg });
+  check('a config of exactly 64 KB is still read',
+    limitRun.res.status === 0 && plain(limitRun.out).includes('!!'), JSON.stringify(plain(limitRun.out)));
+  const overRun = runIn(padded(64 * 1024 + 1), { seed: homeCfg });
+  check('a config one byte over 64 KB is skipped',
+    overRun.res.status === 0 && plain(overRun.out).includes('@@') && !plain(overRun.out).includes('!!'), JSON.stringify(plain(overRun.out)));
+
+  // The git reads: a .git file or HEAD that is a directory or oversized is treated as no branch,
+  // never read. (A directory stands in for a device or FIFO; none are created here.)
+  const gitRun = (setup) => {
+    const home = makeTempHome();
+    const proj = path.join(home, 'proj');
+    fs.mkdirSync(proj, { recursive: true });
+    setup(proj);
+    const base = cleanEnv();
+    const res = spawnSync(process.execPath, [BIN], {
+      input: JSON.stringify(inlinePayload({ cwd: proj })), encoding: 'utf8', timeout: 20000, cwd: home,
+      env: { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200' },
+    });
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    return { res, out: plain(res.stdout || '') };
+  };
+  const control = gitRun(repoHead);
+  check('control: a plain HEAD file shows the branch', control.out.includes('⎇ main'), JSON.stringify(control.out));
+  const headDir = gitRun((proj) => { fs.mkdirSync(path.join(proj, '.git', 'HEAD'), { recursive: true }); });
+  check('a HEAD that is a directory shows no branch and exits 0', headDir.res.status === 0 && !headDir.out.includes('⎇'), JSON.stringify(headDir.out));
+  const headBig = gitRun((proj) => {
+    fs.mkdirSync(path.join(proj, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.git', 'HEAD'), 'ref: refs/heads/main\n' + ' '.repeat(2 * 1024 * 1024), 'utf8');
+  });
+  check('an oversized HEAD file shows no branch and exits 0', headBig.res.status === 0 && !headBig.out.includes('⎇'), JSON.stringify(headBig.out));
+  const linkedGitdir = (proj, pad) => {
+    const real = path.join(proj, '..', 'real-gitdir');
+    fs.mkdirSync(real, { recursive: true });
+    fs.writeFileSync(path.join(real, 'HEAD'), 'ref: refs/heads/wt\n', 'utf8');
+    fs.writeFileSync(path.join(proj, '.git'), 'gitdir: ' + real + '\n' + pad, 'utf8');
+  };
+  const gitFileOk = gitRun((proj) => linkedGitdir(proj, ''));
+  check('control: a small gitdir file is followed', gitFileOk.out.includes('⎇ wt'), JSON.stringify(gitFileOk.out));
+  const gitFileBig = gitRun((proj) => linkedGitdir(proj, '#'.repeat(2 * 1024 * 1024)));
+  check('an oversized gitdir file is not read', gitFileBig.res.status === 0 && !gitFileBig.out.includes('⎇'), JSON.stringify(gitFileBig.out));
+
+  // stdin: capped at 8 MB. Past the cap the render prints nothing and still exits 0, with no
+  // "no input" hint and no partial output. Under the cap a large payload still renders.
+  // One valid payload followed by whitespace: the parsed content is identical either side of the
+  // cap, so the only difference between the runs is whether the cap fires. Every "over" run has a
+  // matching "under" control that proves the same payload prints something without the padding.
+  const MB = 1024 * 1024;
+  const padding = ' '.repeat(9 * MB);
+  const statusPayload = JSON.stringify(inlinePayload({}));
+  const subagentPayload = JSON.stringify({ columns: 80, tasks: [{ id: 'cap-test-1', type: 'local_agent', status: 'running', label: 'cap test row' }] });
+
+  const smallOk = runIn(undefined, { input: () => statusPayload + padding.slice(0, 7 * MB) });
+  check('a payload of 7 MB (under the cap) still renders',
+    smallOk.res.status === 0 && plain(smallOk.out).includes('Haiku'), `status ${smallOk.res.status}, ${smallOk.out.length} chars`);
+  const overCap = runIn(undefined, { input: () => statusPayload + padding });
+  check('a payload over 8 MB renders nothing, exits 0 and prints no garbage',
+    overCap.res.status === 0 && overCap.out === '' && !/no input received/.test(overCap.res.stderr || ''),
+    `status ${overCap.res.status}, stdout ${JSON.stringify(overCap.out.slice(0, 80))}, stderr ${JSON.stringify((overCap.res.stderr || '').slice(0, 120))}`);
+
+  const subUnder = spawnRender(subagentPayload + padding.slice(0, 7 * MB), { args: [BIN, '--subagent'] });
+  const subRows = (subUnder.stdout || '').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } });
+  check('--subagent with a 7 MB payload (under the cap) still prints its row',
+    subUnder.status === 0 && subRows.length === 1 && subRows[0] && subRows[0].id === 'cap-test-1',
+    `status ${subUnder.status}, stdout ${JSON.stringify((subUnder.stdout || '').slice(0, 120))}`);
+  const subOver = spawnRender(subagentPayload + padding, { args: [BIN, '--subagent'] });
+  check('--subagent over 8 MB prints nothing and exits 0',
+    subOver.status === 0 && subOver.stdout === '', `status ${subOver.status}, stdout ${JSON.stringify((subOver.stdout || '').slice(0, 80))}`);
+}
+
+// A repository's own config can name content filter drivers and include files, and `git status`
+// honors both. ampline-claude therefore does not spawn `git status` in a repository whose own
+// config (never the global or system one) defines either; the branch still renders from HEAD.
+// Nothing here runs a filter: the values are `cat`, and the scanner tests only pass text to a
+// pure function.
+function runGitTrustTests() {
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    git trust boundary: ' + name);
+    else fail('git trust boundary: ' + name, detail);
+  };
+  const git = require('../lib/segments/git');
+  if (typeof git.configIsUntrusted !== 'function' || typeof git.repoConfigIsTrusted !== 'function') {
+    fail('git trust boundary: scanner exports', 'configIsUntrusted and repoConfigIsTrusted must be exported from lib/segments/git.js');
+    return;
+  }
+  const bad = git.configIsUntrusted;
+
+  // ---- the scanner, as a pure function of config text ----
+  const plainCfg = '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n[remote "origin"]\n\turl = https://example.com/a.git\n[branch "main"]\n\tremote = origin\n';
+  check('an ordinary config is accepted', bad(plainCfg) === false, 'expected false');
+  check('an empty config is accepted', bad('') === false, 'expected false');
+  check('a filter section is flagged', bad('[filter "x"]\n\tclean = cat\n') === true, 'expected true');
+  check('a filter section with no subsection is flagged', bad('[filter]\n\tclean = cat\n') === true, 'expected true');
+  check('a filter section with no keys is flagged', bad('[filter "x"]\n') === true, 'expected true');
+  check('section names are case-insensitive',
+    bad('[FILTER "x"]\n') === true && bad('[Filter "x"]\n') === true && bad('[iNcLuDe]\n') === true && bad('[INCLUDEIF "gitdir:/a/"]\n') === true, 'expected true');
+  check('whitespace around the name and before the header is tolerated',
+    bad('   \t[filter   "x"]\n') === true && bad('\t[ filter "x" ]\n') === true && bad('[filter\t"x"]') === true, 'expected true');
+  check('quoted subsections with spaces, dots and escapes are flagged',
+    bad('[filter "my driver.v2"]\n') === true && bad('[filter "a\\"b"]\n') === true, 'expected true');
+  check('the legacy dotted form is flagged', bad('[filter.lfs]\n') === true && bad('[includeIf.gitdir:/a/]\n') === true, 'expected true');
+  check('include is flagged', bad('[include]\n\tpath = ../x.cfg\n') === true, 'expected true');
+  check('includeIf with a condition is flagged',
+    bad('[includeIf "gitdir:~/work/"]\n\tpath = work.cfg\n') === true && bad('[includeIf "onbranch:main"]\n\tpath = m.cfg\n') === true, 'expected true');
+  check('a header after other sections is found', bad(plainCfg + '[filter "late"]\n') === true, 'expected true');
+  check('CRLF line endings are handled', bad('[core]\r\n\tbare = false\r\n[filter "x"]\r\n') === true && bad('[core]\r\n\tbare = false\r\n') === false, 'expected true/false');
+  check('a leading byte order mark does not hide a header', bad(String.fromCharCode(0xFEFF) + '[filter "x"]\n') === true, 'expected true');
+  check('a header after another header on one line is flagged', bad('[core][filter "x"]\n') === true, 'expected true');
+  check('a header with a trailing comment is flagged', bad('[filter "x"] # note\n') === true && bad('[include] ; note\n') === true, 'expected true');
+  // Belt and braces: any "[" followed by filter or include anywhere in the text is untrusted, even in
+  // a comment or a value. These false positives are accepted and documented; the cost is a missing marker.
+  check('commented-out headers are flagged too (documented false positive)', bad('# [filter "x"]\n; [include]\n[core]\n') === true, 'expected true');
+  check('comments that merely mention the words do not count', bad('# we use a filter and an include elsewhere\n[core]\n') === false, 'expected false');
+  check('a legacy dotted base followed by a quoted subsection containing "]" and another header is flagged',
+    bad('[section.sub "quoted]text"][filter "name"]\n') === true && bad('[section.sub "quoted]text"] [include]\n') === true, 'expected true');
+  check('a dotted base followed by a quoted subsection is read like git reads it',
+    bad('[remote.origin "a b"]\n\turl = x\n') === false && bad('[branch.main]\n') === false, 'expected false');
+  check('the belt-and-braces rule sees through whitespace and case', bad('[core]\n\tx = [ \tFILTER\n') === true && bad('x [Include') === true, 'expected true');
+  check('the words in keys, values and other sections do not count',
+    bad('[alias]\n\tfilter = log\n\tinclude = status\n[core]\n\tattributesfile = filter.txt\n[user]\n\tname = include\n[remote "filter"]\n\turl = x\n[branch "include"]\n') === false, 'expected false');
+  check('similar section names do not count unless they start with filter or include',
+    bad('[myfilter]\n[core]\n') === false && bad('[filters]\n') === true && bad('[includes]\n') === true, 'expected false/true/true');
+  check('values that mimic a header are flagged (documented false positive)', bad('[core]\n\tname = [filter "x"]\n') === true, 'expected true');
+  check('an unterminated header is untrusted', bad('[core\n') === true && bad('[filter "x"\n') === true && bad('[') === true, 'expected true');
+  check('an unterminated quote in a header is untrusted', bad('[remote "origin]\n') === true, 'expected true');
+  check('a malformed header is untrusted', bad('[]\n') === true && bad('[ "x" ]\n') === true && bad('[core!]\n') === true, 'expected true');
+  check('a continuation line that looks like a header errs toward untrusted', bad('[core]\n\tname = a \\\n[filter "x"]\n') === true, 'expected true');
+  check('input that is not text is untrusted', bad(null) === true && bad(undefined) === true && bad(42) === true && bad({}) === true, 'expected true');
+
+  // ---- through the real binary, in real throwaway repositories ----
+  const gitEnv = (home) => {
+    // Nothing from the developer's environment may steer git: every GIT_* variable and
+    // XDG_CONFIG_HOME is dropped, then global config is pointed inside the throwaway home.
+    const base = { ...process.env };
+    for (const k of Object.keys(base)) if (k.startsWith('GIT_')) delete base[k];
+    for (const k of ['NO_COLOR', 'FORCE_COLOR', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']) delete base[k];
+    return {
+      ...base, HOME: home, USERPROFILE: home, COLUMNS: '200',
+      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(home, 'gitconfig-global'),
+    };
+  };
+  // A missing git binary fails the suite on purpose: CI has git, and a silent skip would let the
+  // trust-boundary tests vanish without anyone noticing.
+  const probe = spawnSync('git', ['--version'], { encoding: 'utf8' });
+  if (probe.error || probe.status !== 0) {
+    check('git is available to run the repository tests', false, 'the git binary is needed for these tests');
+    return;
+  }
+  const runGit = (home, cwd, args) => spawnSync('git', args, { cwd, env: gitEnv(home), encoding: 'utf8', timeout: 20000 });
+
+  // `setup(home, proj)` prepares the repository and may return { cwd } to render from elsewhere,
+  // or false when its own setup failed. Returns { out, cacheFiles, setupOk }.
+  const scenario = (setup, extraEnv) => {
+    const home = makeTempHome();
+    const proj = path.join(home, 'proj');
+    fs.mkdirSync(proj, { recursive: true });
+    let setupOk = false;
+    let out = '';
+    let cacheFiles = [];
+    try {
+      setupOk = runGit(home, proj, ['init', '-q']).status === 0;
+      const result = setup(home, proj);
+      if (result === false) setupOk = false;
+      const cwd = (result && result.cwd) || proj;
+      // Rendered twice, outputs joined: the first `git status` can be slow on a cold machine and
+      // time out. A timeout leaves a failure marker ({ failed: true }) that the next render would
+      // honor for 30 s, so any failure marker is deleted between the two renders: the second
+      // render really runs git again, and a marker on either render counts. A skipped repository
+      // must show no marker on either. (A good status entry is left alone.)
+      const dropFailureMarkers = () => {
+        const dir = path.join(home, '.claude', 'cache', 'ampline');
+        let names = [];
+        try { names = fs.readdirSync(dir).filter((f) => f.startsWith('git_')); } catch {}
+        for (const f of names) {
+          try { if (JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')).failed === true) fs.rmSync(path.join(dir, f), { force: true }); } catch {}
+        }
+      };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        if (attempt === 1) dropFailureMarkers();
+        const res = spawnSync(process.execPath, [BIN], {
+          input: JSON.stringify(inlinePayload({ cwd })), encoding: 'utf8', timeout: 20000, cwd: home, env: { ...gitEnv(home), ...extraEnv },
+        });
+        out += String(res.stdout || '').replace(/\x1b\[[0-9;]*m/g, '') + '\n';
+      }
+      // Only entries that hold a status count. A remembered failure ({ failed: true }) is allowed: it
+      // carries nothing a repository could influence (see the negative-cache tests in runRobustnessTests).
+      try {
+        const cacheDir = path.join(home, '.claude', 'cache', 'ampline');
+        cacheFiles = fs.readdirSync(cacheDir).filter((f) => {
+          if (!f.startsWith('git_')) return false;
+          try { return JSON.parse(fs.readFileSync(path.join(cacheDir, f), 'utf8')).failed !== true; } catch { return true; }
+        });
+      } catch {}
+    } finally {
+      try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    }
+    return { out, cacheFiles, setupOk };
+  };
+  const append = (proj, text) => fs.appendFileSync(path.join(proj, '.git', 'config'), text, 'utf8');
+  const hasMarker = (out) => out.includes('✓') || out.includes('●');
+
+  const control = scenario(() => {});
+  check('control: a plain repository shows its branch and a clean marker', control.setupOk && control.out.includes('⎇') && control.out.includes('✓'), JSON.stringify(control.out));
+  check('control: a plain repository writes a git cache entry', control.cacheFiles.length === 1, JSON.stringify(control.cacheFiles));
+
+  const skipped = (label, setup) => {
+    const r = scenario(setup);
+    check(label + ': the branch still renders', r.setupOk && r.out.includes('⎇'), JSON.stringify(r.out));
+    check(label + ': no clean or dirty marker is shown', !hasMarker(r.out), JSON.stringify(r.out));
+    check(label + ': no git cache entry is written', r.cacheFiles.length === 0, JSON.stringify(r.cacheFiles));
+  };
+  skipped('a filter section in the repository config', (home, proj) => { append(proj, '[filter "noop"]\n\tclean = cat\n\tsmudge = cat\n'); });
+  // A commondir whose text is "absent" names <gitdir>/absent; git reads that directory's config.
+  skipped('a commondir that says "absent", with a filter in <gitdir>/absent/config', (home, proj) => {
+    const common = path.join(proj, '.git', 'absent');
+    fs.mkdirSync(path.join(common, 'objects'), { recursive: true });
+    fs.mkdirSync(path.join(common, 'refs'));
+    fs.writeFileSync(path.join(common, 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+    fs.writeFileSync(path.join(proj, '.git', 'commondir'), 'absent', 'utf8');
+  });
+  skipped('an include section in the repository config', (home, proj) => {
+    fs.writeFileSync(path.join(proj, '.git', 'extra.cfg'), '# nothing here\n', 'utf8');
+    append(proj, '[include]\n\tpath = extra.cfg\n');
+  });
+  skipped('an includeIf section in the repository config', (home, proj) => {
+    fs.writeFileSync(path.join(proj, '.git', 'extra.cfg'), '# nothing here\n', 'utf8');
+    append(proj, '[includeIf "gitdir:/nowhere/"]\n\tpath = extra.cfg\n');
+  });
+  skipped('a filter section in config.worktree', (home, proj) => {
+    fs.writeFileSync(path.join(proj, '.git', 'config.worktree'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+  });
+  skipped('a repository config that is not a readable small regular file', (home, proj) => {
+    fs.rmSync(path.join(proj, '.git', 'config'), { force: true });
+    fs.mkdirSync(path.join(proj, '.git', 'config'));
+  });
+
+  // A linked worktree reads the common directory's config too (found through `commondir`).
+  const linked = (extra) => scenario((home, proj) => {
+    const id = ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false'];
+    if (runGit(home, proj, [...id, 'commit', '-q', '--allow-empty', '-m', 'x']).status !== 0) return false;
+    const wt = path.join(home, 'wt');
+    if (runGit(home, proj, ['worktree', 'add', '-q', '-b', 'linked', wt]).status !== 0) return false;
+    extra(proj);
+    return { cwd: wt };
+  });
+  const linkedOk = linked(() => {});
+  check('control: a linked worktree of a plain repository gets a marker',
+    linkedOk.setupOk && linkedOk.out.includes('⎇ linked') && hasMarker(linkedOk.out), JSON.stringify(linkedOk.out));
+  const linkedBad = linked((proj) => { append(proj, '[filter "noop"]\n\tclean = cat\n'); });
+  check('a filter section in the common directory config skips the call in a linked worktree',
+    linkedBad.setupOk && linkedBad.out.includes('⎇ linked') && !hasMarker(linkedBad.out) && linkedBad.cacheFiles.length === 0,
+    JSON.stringify([linkedBad.out, linkedBad.cacheFiles]));
+
+  // ---- git must read exactly the repository that was scanned ----
+  const id = ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false'];
+  const commitFile = (home, proj) => {
+    fs.writeFileSync(path.join(proj, 'tracked.txt'), 'one\n', 'utf8');
+    return runGit(home, proj, ['add', 'tracked.txt']).status === 0
+      && runGit(home, proj, [...id, 'commit', '-q', '-m', 'x']).status === 0;
+  };
+  const sub = scenario((home, proj) => {
+    if (!commitFile(home, proj)) return false;
+    fs.writeFileSync(path.join(proj, 'tracked.txt'), 'two\n', 'utf8');
+    const deep = path.join(proj, 'sub', 'deeper');
+    fs.mkdirSync(deep, { recursive: true });
+    return { cwd: deep };
+  });
+  check('control: a subdirectory cwd still gets the right (dirty) marker with git pinned to the repository',
+    sub.setupOk && sub.out.includes('●'), JSON.stringify(sub.out));
+  const gitfileOk = scenario((home, proj) => {
+    const moved = path.join(proj, 'real git dir');
+    fs.renameSync(path.join(proj, '.git'), moved);
+    fs.writeFileSync(path.join(proj, '.git'), 'gitdir: real git dir\n', 'utf8');
+    return runGit(home, proj, ['status', '--porcelain']).status === 0 ? undefined : false;
+  });
+  check('control: a plain .git file with a path containing spaces still gets a marker',
+    gitfileOk.setupOk && gitfileOk.out.includes('⎇') && hasMarker(gitfileOk.out) && gitfileOk.cacheFiles.length === 1, JSON.stringify([gitfileOk.out, gitfileOk.cacheFiles]));
+
+  // Divergence cases: ampline and git must not disagree about which files make up the repository.
+  const divergent = (label, setup, branchShown = true) => {
+    const r = scenario(setup);
+    check(label + ': git itself accepts the layout (the test is not vacuous)', r.setupOk, JSON.stringify(r.out));
+    check(label + ': no marker is shown', !hasMarker(r.out) && (!branchShown || r.out.includes('⎇')), JSON.stringify(r.out));
+    check(label + ': no git cache entry is written', r.cacheFiles.length === 0, JSON.stringify(r.cacheFiles));
+  };
+  // A copy of the repository's git dir that carries a harmless no-op filter section.
+  const copyWithFilter = (from, to) => {
+    fs.cpSync(from, to, { recursive: true, filter: (src) => path.basename(src) !== 'worktrees' });
+    fs.appendFileSync(path.join(to, 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+  };
+  divergent('a commondir with a leading space (git reads "<gitdir>/ common", a trimmed path would read "<gitdir>/common")', (home, proj) => {
+    if (runGit(home, proj, [...id, 'commit', '-q', '--allow-empty', '-m', 'x']).status !== 0) return false;
+    const wt = path.join(home, 'wt');
+    if (runGit(home, proj, ['worktree', 'add', '-q', '-b', 'linked', wt]).status !== 0) return false;
+    const staging = path.join(home, 'common-copy');
+    copyWithFilter(path.join(proj, '.git'), staging);
+    const wtGit = path.join(proj, '.git', 'worktrees', 'wt');
+    fs.renameSync(staging, path.join(wtGit, ' common'));
+    fs.writeFileSync(path.join(wtGit, 'commondir'), ' common\n', 'utf8');
+    return runGit(home, wt, ['status', '--porcelain']).status === 0 ? { cwd: wt } : false;
+  });
+  divergent('a .git file with an extra leading space after "gitdir:" (git reads " g")', (home, proj) => {
+    fs.renameSync(path.join(proj, '.git'), path.join(proj, 'g'));
+    copyWithFilter(path.join(proj, 'g'), path.join(proj, ' g'));
+    fs.writeFileSync(path.join(proj, '.git'), 'gitdir:  g\n', 'utf8');
+    return runGit(home, proj, ['status', '--porcelain']).status === 0 ? undefined : false;
+  });
+  // Defense in depth: a bare-looking directory between the cwd and the repository is never inspected.
+  const embedded = scenario((home, proj) => {
+    const inner = path.join(proj, 'inner');
+    fs.mkdirSync(inner);
+    if (runGit(home, inner, ['init', '-q', '--bare', '.']).status !== 0) return false;
+    fs.appendFileSync(path.join(inner, 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+    return { cwd: inner };
+  });
+  check('an embedded bare directory under a clean outer repository: the branch renders, no marker, no cache entry',
+    embedded.setupOk && embedded.out.includes('⎇') && !hasMarker(embedded.out) && embedded.cacheFiles.length === 0, JSON.stringify([embedded.out, embedded.cacheFiles]));
+
+  // ---- the exact command line (submodules, locks, discovery) ----
+  if (typeof git.buildStatusArgs !== 'function') {
+    fail('git trust boundary: buildStatusArgs export', 'buildStatusArgs must be exported from lib/segments/git.js');
+  } else {
+    const args = git.buildStatusArgs();
+    check('the status call ignores dirty submodules (their own config is never scanned)', args.includes('--ignore-submodules=dirty'), JSON.stringify(args));
+    check('the status call overrides fsmonitor, forbids implicit bare repositories and takes no optional locks',
+      args.includes('core.fsmonitor=') && args.includes('safe.bareRepository=explicit') && args.includes('--no-optional-locks'), JSON.stringify(args));
+    // --git-dir and --work-tree switch off git's dubious-ownership check, so they must never come
+    // back; git is started in the scanned work tree instead (see getGitState).
+    check('the status call does not use --git-dir or --work-tree (they would bypass the ownership check)',
+      !args.some((a) => /^--(git-dir|work-tree)\b/.test(a)), JSON.stringify(args));
+    check('the status call ends with the subcommand and its own options', args.indexOf('status') > args.indexOf('--no-optional-locks'), JSON.stringify(args));
+  }
+  check('the git child gets GIT_NO_LAZY_FETCH=1 and keeps the rest of the environment',
+    typeof git.buildStatusEnv === 'function' && git.buildStatusEnv({ A: 'b' }).GIT_NO_LAZY_FETCH === '1' && git.buildStatusEnv({ A: 'b' }).A === 'b',
+    'buildStatusEnv');
+  if (typeof git.buildStatusEnv === 'function') {
+    const inherited = {
+      A: 'b', GIT_DIR: '/x', GIT_WORK_TREE: '/x', GIT_COMMON_DIR: '/x', GIT_INDEX_FILE: '/x', GIT_OBJECT_DIRECTORY: '/x',
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: '/x', GIT_NAMESPACE: 'n', GIT_CEILING_DIRECTORIES: '/elsewhere',
+    };
+    const cleaned = git.buildStatusEnv(inherited, path.join(os.tmpdir(), 'wt'));
+    check('inherited git location variables are removed from the child environment',
+      ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_NAMESPACE'].every((k) => !(k in cleaned)) && cleaned.A === 'b',
+      JSON.stringify(cleaned));
+    check('GIT_CEILING_DIRECTORIES is the parent of the work tree, replacing the inherited value',
+      cleaned.GIT_CEILING_DIRECTORIES === os.tmpdir(), JSON.stringify(cleaned.GIT_CEILING_DIRECTORIES));
+    const rootDir = path.parse(os.tmpdir()).root;
+    check('no GIT_CEILING_DIRECTORIES is set when the work tree is a filesystem root',
+      !('GIT_CEILING_DIRECTORIES' in git.buildStatusEnv(inherited, rootDir)), 'expected it to be omitted');
+  }
+
+  // Git only accepts a .git directory that passes its own is_git_directory check (HEAD, objects/,
+  // refs/); otherwise it silently keeps walking up to a repository ampline never scanned. ampline
+  // mirrors that check, and starts git at the real path of the work tree with its parent as the
+  // ceiling, so a rejected entry makes git fail rather than climb (a limit, not a sandbox).
+  const innerLayout = (full) => (home, proj) => {
+    fs.appendFileSync(path.join(proj, '.git', 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+    const inner = path.join(proj, 'inner');
+    fs.mkdirSync(inner);
+    if (full) return runGit(home, inner, ['init', '-q']).status === 0 ? { cwd: inner } : false;
+    fs.mkdirSync(path.join(inner, '.git'));
+    fs.writeFileSync(path.join(inner, '.git', 'HEAD'), 'ref: refs/heads/inner\n', 'utf8');
+    return { cwd: inner };
+  };
+  const innerControl = scenario(innerLayout(true));
+  check('control: a complete inner repository inside an outer one gets its own marker',
+    innerControl.setupOk && hasMarker(innerControl.out) && innerControl.cacheFiles.length === 1, JSON.stringify([innerControl.out, innerControl.cacheFiles]));
+  const innerBad = scenario(innerLayout(false));
+  check('a .git directory git would reject (only a HEAD file) inside an outer repository: branch from HEAD, no marker, no cache entry',
+    innerBad.setupOk && innerBad.out.includes('⎇ inner') && !hasMarker(innerBad.out) && innerBad.cacheFiles.length === 0, JSON.stringify([innerBad.out, innerBad.cacheFiles]));
+  // Git reads HEAD as it is on disk: it skips no whitespace before "ref:" or an object id, and it
+  // needs objects/ and refs/ to be searchable. A trimmed or looser mirror of that would accept a
+  // .git directory git rejects, after which git can climb into a repository ampline never scanned.
+  const spaced = (kind) => (home, proj) => {
+    const inner = path.join(proj, 'inner');
+    fs.mkdirSync(path.join(inner, '.git', 'objects'), { recursive: true });
+    fs.mkdirSync(path.join(inner, '.git', 'refs'));
+    fs.writeFileSync(path.join(inner, '.git', 'HEAD'), ' ref: refs/heads/spaced\n', 'utf8');
+    if (kind === 'junction') {
+      // A work tree reached through a link: git's own idea of its directory is the real path.
+      const link = path.join(home, 'link');
+      fs.symlinkSync(inner, link, 'junction');
+      return { cwd: link };
+    }
+    return { cwd: inner };
+  };
+  for (const [label, kind] of [['directly', 'plain'], ['through a symlink or junction', 'junction']]) {
+    const r = scenario(spaced(kind));
+    check('a .git directory whose HEAD starts with a space (git rejects it), reached ' + label + ': branch from HEAD, no marker from the outer repository, no cache entry',
+      r.setupOk && r.out.includes('⎇ spaced') && !hasMarker(r.out) && r.cacheFiles.length === 0, JSON.stringify([r.out, r.cacheFiles]));
+  }
+  if (typeof git.gitStartDir === 'function') {
+    // The same layout with the real git: started where gitStartDir says, with the ceiling that
+    // buildStatusEnv sets, git must fail (128) instead of reporting the outer repository. Started
+    // at the logical (linked) path with the logical parent as ceiling, as before, it escapes: the control.
+    const probeHome = makeTempHome();
+    try {
+      const outer = path.join(probeHome, 'outer');
+      fs.mkdirSync(outer);
+      const inner = path.join(outer, 'inner');
+      fs.mkdirSync(path.join(inner, '.git', 'objects'), { recursive: true });
+      fs.mkdirSync(path.join(inner, '.git', 'refs'));
+      fs.writeFileSync(path.join(inner, '.git', 'HEAD'), ' ref: refs/heads/spaced\n', 'utf8');
+      const link = path.join(probeHome, 'link');
+      fs.symlinkSync(inner, link, 'junction');
+      const initOk = runGit(probeHome, outer, ['init', '-q']).status === 0;
+      const gitIn = (cwd, ceiling) => spawnSync('git', ['rev-parse', '--show-toplevel'], {
+        cwd, env: { ...gitEnv(probeHome), GIT_CEILING_DIRECTORIES: ceiling }, encoding: 'utf8', timeout: 20000,
+      });
+      const control = gitIn(link, path.dirname(link));
+      check('control: from a linked work tree, a ceiling built from the logical path does not stop git leaving it',
+        initOk && control.status === 0, JSON.stringify([control.status, control.stdout, control.stderr]));
+      const start = git.gitStartDir(link);
+      check('gitStartDir resolves a linked work tree to its real path', start === fs.realpathSync.native(inner), JSON.stringify(start));
+      const env = git.buildStatusEnv({}, start);
+      const held = gitIn(start, env.GIT_CEILING_DIRECTORIES);
+      check('started at the real path with its parent as ceiling, git fails (128) instead of escaping to the outer repository',
+        held.status === 128 && !String(held.stdout).trim(), JSON.stringify([held.status, held.stdout, held.stderr]));
+    } finally {
+      try { fs.rmSync(probeHome, { recursive: true, force: true }); } catch {}
+    }
+    const asked = [];
+    const seam = (answer) => (p) => { asked.push(p); if (answer instanceof Error) throw answer; return answer; };
+    const realWt = path.join(os.tmpdir(), 'wt-parent', 'real');
+    check('gitStartDir returns what realpath returns for the work tree',
+      git.gitStartDir(path.join(os.tmpdir(), 'x'), seam(realWt)) === realWt && asked[0] === path.join(os.tmpdir(), 'x'), JSON.stringify(asked));
+    check('gitStartDir is null (the call is skipped) when realpath fails or returns nothing usable',
+      git.gitStartDir('/x', seam(new Error('ENOENT'))) === null && git.gitStartDir('/x', seam('')) === null
+        && git.gitStartDir('/x', seam(undefined)) === null && git.gitStartDir('/x', seam('relative/dir')) === null, 'expected null');
+    check('gitStartDir is null when the work tree\'s parent contains the list separator (it would split into two ceilings)',
+      git.gitStartDir('/x', seam(path.join(os.tmpdir(), 'a' + path.delimiter + 'b', 'wt'))) === null, 'expected null');
+  }
+  if (process.platform !== 'win32' && typeof process.getuid === 'function' && process.getuid() !== 0) {
+    // access(X_OK): git rejects a git dir whose objects/ or refs/ it cannot search.
+    const noexec = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-noexec-'));
+    try {
+      for (const d of ['objects', 'refs']) fs.mkdirSync(path.join(noexec, '.git', d), { recursive: true });
+      fs.writeFileSync(path.join(noexec, '.git', 'HEAD'), 'ref: refs/heads/x\n', 'utf8');
+      const before = git.resolveRepo(noexec);
+      fs.chmodSync(path.join(noexec, '.git', 'objects'), 0o600);
+      const after = git.resolveRepo(noexec);
+      fs.chmodSync(path.join(noexec, '.git', 'objects'), 0o700);
+      check('an objects directory git cannot search (no execute bit) makes the repository not pinnable',
+        !!before && before.pinnable === true && !!after && after.pinnable === false, JSON.stringify([before, after]));
+    } finally {
+      try { fs.rmSync(noexec, { recursive: true, force: true }); } catch {}
+    }
+  }
+  if (typeof git.resolveRepo === 'function') {
+    const incomplete = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-incomplete-'));
+    try {
+      fs.mkdirSync(path.join(incomplete, '.git'));
+      fs.writeFileSync(path.join(incomplete, '.git', 'HEAD'), 'ref: refs/heads/x\n', 'utf8');
+      const repo = git.resolveRepo(incomplete);
+      check('resolveRepo marks a .git directory that fails git\'s own check as not pinnable', !!repo && repo.pinnable === false, JSON.stringify(repo));
+      fs.mkdirSync(path.join(incomplete, '.git', 'objects'));
+      fs.mkdirSync(path.join(incomplete, '.git', 'refs'));
+      const ok = git.resolveRepo(incomplete);
+      check('resolveRepo accepts a .git directory with HEAD, objects and refs', !!ok && ok.pinnable === true, JSON.stringify(ok));
+      // HEAD is judged as it is on disk, with no trimming: git skips no leading whitespace.
+      const A40 = 'a'.repeat(40);
+      const headCases = [
+        [' ref: refs/heads/x\n', false], ['\nref: refs/heads/x\n', false], ['ref: refs/heads/x', true], ['ref:refs/heads/x\n', true],
+        // Git's whitespace after "ref:" is space, tab, newline and carriage return, not JS's \s.
+        ['ref:\trefs/heads/x\n', true], ['ref:\vrefs/heads/x\n', false], ['ref: refs/heads/x\n', false], ['ref:\frefs/heads/x\n', false],
+        ['ref: heads/x\n', false], [' ' + A40 + '\n', false], [A40 + '\n', true], ['a'.repeat(64) + '\n', true], ['a'.repeat(39) + '\n', false],
+      ];
+      const headResults = headCases.map(([text]) => {
+        fs.writeFileSync(path.join(incomplete, '.git', 'HEAD'), text, 'utf8');
+        return git.resolveRepo(incomplete).pinnable;
+      });
+      check('HEAD is judged untrimmed: leading whitespace is not pinnable, the exact forms git accepts are',
+        headCases.every(([, want], i) => headResults[i] === want), JSON.stringify(headCases.map(([t], i) => [t, headResults[i]])));
+    } finally {
+      try { fs.rmSync(incomplete, { recursive: true, force: true }); } catch {}
+    }
+
+    // The gitfile target is resolved the way git does it: "<dir>/<value>" goes to realpath as one
+    // string (symlinks followed before "..") and the git dir is validated THERE. A seam stands in
+    // for realpath here; a real-symlink scenario follows on POSIX.
+    const gfRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-gitfile-'));
+    try {
+      const target = path.join(gfRoot, 'target');
+      for (const d of ['objects', 'refs']) fs.mkdirSync(path.join(target, d), { recursive: true });
+      fs.writeFileSync(path.join(target, 'HEAD'), 'ref: refs/heads/seam\n', 'utf8');
+      const work = path.join(gfRoot, 'work');
+      fs.mkdirSync(work);
+      fs.writeFileSync(path.join(work, '.git'), 'gitdir: a/../b\n', 'utf8');
+      const asked = [];
+      const via = (answer) => (p) => { asked.push(p); if (answer instanceof Error) throw answer; return answer; };
+      const repo = git.resolveRepo(work, { realpath: via(target) });
+      check('the gitfile target is handed to realpath as "<dir>/<value>", unnormalised',
+        asked.length === 1 && asked[0] === work + '/a/../b', JSON.stringify(asked));
+      check('the git dir realpath returns is the one validated (and read for HEAD)',
+        !!repo && repo.realGitDir === target && repo.pinnable === true && repo.gitDir === path.resolve(work, 'a/../b'), JSON.stringify(repo));
+      const failed = git.resolveRepo(work, { realpath: via(new Error('ENOENT')) });
+      check('a gitfile target whose realpath fails is not pinnable', !!failed && failed.pinnable === false, JSON.stringify(failed));
+      const bare = path.join(gfRoot, 'not-a-git-dir');
+      fs.mkdirSync(bare);
+      const rejected = git.resolveRepo(work, { realpath: via(bare) });
+      check('a gitfile target that is not a git directory is not pinnable', !!rejected && rejected.pinnable === false, JSON.stringify(rejected));
+    } finally {
+      try { fs.rmSync(gfRoot, { recursive: true, force: true }); } catch {}
+    }
+  }
+  if (process.platform !== 'win32') {
+    // Real symlinks (POSIX only; CI runs ubuntu and macos): "link/../gd" means <link target>/../gd
+    // to git, but p/gd to a textual reader. Git reads q/gd, which carries a harmless filter section.
+    const symlinked = scenario((home, proj) => {
+      const base = home;
+      const p = path.join(base, 'p');
+      const q = path.join(base, 'q');
+      fs.mkdirSync(p);
+      fs.mkdirSync(path.join(q, 'sub'), { recursive: true });
+      fs.cpSync(path.join(proj, '.git'), path.join(p, 'gd'), { recursive: true });
+      fs.cpSync(path.join(proj, '.git'), path.join(q, 'gd'), { recursive: true });
+      fs.appendFileSync(path.join(q, 'gd', 'config'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+      fs.symlinkSync(path.join(q, 'sub'), path.join(p, 'link'));
+      fs.writeFileSync(path.join(p, '.git'), 'gitdir: link/../gd\n', 'utf8');
+      return runGit(home, p, ['status', '--porcelain']).status === 0 ? { cwd: p } : false;
+    });
+    check('a gitfile target that goes through a symlink before ".." is scanned where git reads it: no marker, no cache entry',
+      symlinked.setupOk && !hasMarker(symlinked.out) && symlinked.cacheFiles.length === 0, JSON.stringify([symlinked.out, symlinked.cacheFiles]));
+  }
+
+  // git keeps its dubious-ownership (safe.directory) check because it is started in the work tree
+  // that holds the scanned .git entry and discovers the repository itself. With the test hook that
+  // pretends the repository belongs to someone else, git refuses: no marker, no cache entry.
+  const ownerSetup = (home, proj) => {
+    const deep = path.join(proj, 'sub');
+    fs.mkdirSync(deep, { recursive: true });
+    return { cwd: deep };
+  };
+  const owned = scenario(ownerSetup);
+  check('control: without the ownership hook a subdirectory cwd shows the marker', owned.setupOk && hasMarker(owned.out), JSON.stringify(owned.out));
+  const foreign = scenario(ownerSetup, { GIT_TEST_ASSUME_DIFFERENT_OWNER: '1' });
+  check('a repository git considers owned by someone else: the branch renders, no marker, no cache entry',
+    foreign.setupOk && foreign.out.includes('⎇') && !hasMarker(foreign.out) && foreign.cacheFiles.length === 0, JSON.stringify([foreign.out, foreign.cacheFiles]));
+
+  // A relative working directory is made absolute first, so the directory that is scanned and the
+  // one git runs in agree.
+  if (typeof git.resolveRepo === 'function') {
+    const relRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-rel-'));
+    const here = process.cwd();
+    try {
+      fs.mkdirSync(path.join(relRoot, '.git'));
+      fs.mkdirSync(path.join(relRoot, 'sub'));
+      process.chdir(relRoot);
+      const repo = git.resolveRepo('sub');
+      check('a relative cwd resolves to an absolute git dir and work tree',
+        !!repo && path.isAbsolute(repo.gitDir) && path.isAbsolute(repo.workTree) && path.basename(repo.gitDir) === '.git', JSON.stringify(repo));
+    } finally {
+      process.chdir(here);
+      try { fs.rmSync(relRoot, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  // ---- repoConfigIsTrusted on hand-built git dirs ----
+  const trustDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ampline-trust-'));
+  try {
+    const gd = (name, files) => {
+      const dir = path.join(trustDir, name);
+      fs.mkdirSync(dir, { recursive: true });
+      for (const [f, content] of Object.entries(files)) {
+        if (content === null) fs.mkdirSync(path.join(dir, f), { recursive: true });
+        else fs.writeFileSync(path.join(dir, f), content, 'utf8');
+      }
+      return dir;
+    };
+    const trusted = git.repoConfigIsTrusted;
+    check('a git dir with a plain config is trusted', trusted(gd('plain', { config: plainCfg })) === true, 'expected true');
+    check('a git dir with no config file is trusted', trusted(gd('noconfig', { HEAD: 'ref: refs/heads/main\n' })) === true, 'expected true');
+    check('a config that is a directory is untrusted', trusted(gd('cfgdir', { config: null })) === false, 'expected false');
+    check('a config.worktree that is a directory is untrusted', trusted(gd('wtdir', { config: plainCfg, 'config.worktree': null })) === false, 'expected false');
+    fs.mkdirSync(path.join(trustDir, 'common'));
+    fs.writeFileSync(path.join(trustDir, 'common', 'config'), plainCfg, 'utf8');
+    const withCommon = (name, text) => trusted(gd(name, { config: plainCfg, commondir: text }));
+    check('a commondir written the way git writes it (one trailing newline) is followed', withCommon('cd-ok', '../common\n') === true, 'expected true');
+    check('a commondir without a trailing newline is followed', withCommon('cd-nonl', '../common') === true, 'expected true');
+    check('a commondir with leading whitespace is untrusted', withCommon('cd-lead', ' ../common\n') === false, 'expected false');
+    check('a commondir with trailing whitespace is untrusted', withCommon('cd-trail', '../common \n') === false, 'expected false');
+    check('a commondir with a carriage return is untrusted', withCommon('cd-cr', '../common\r\n') === false, 'expected false');
+    check('a commondir with an embedded newline is untrusted', withCommon('cd-nl', '../common\nx\n') === false, 'expected false');
+    check('an empty commondir is untrusted', withCommon('cd-empty', '') === false && withCommon('cd-empty2', '\n') === false, 'expected false');
+    check('a commondir that points at a config with a filter is untrusted',
+      (() => { gd('common-bad', { config: '[filter "x"]\n' }); return withCommon('cd-bad', '../common-bad\n'); })() === false, 'expected false');
+
+    // commondir is resolved the way git does it: "<gitdir>/<value>" is handed to realpath as one
+    // string, so a symlink inside the git dir is followed before any ".." is applied (a textual
+    // path.resolve would collapse ".." first). Symlinks are not created here (Windows); a seam
+    // records what is asked and answers with real directories.
+    const seen = [];
+    const realpathTo = (answer) => (p) => { seen.push(p); if (answer instanceof Error) throw answer; return answer; };
+    const seamGit = gd('seam', { config: plainCfg, commondir: '../common/x/..\n' });
+    seen.length = 0;
+    const seamTrusted = trusted(seamGit, { realpath: realpathTo(path.join(trustDir, 'common')) });
+    check('commondir is passed to realpath unnormalised, as "<gitdir>/<value>"', seen.length === 1 && seen[0] === seamGit + '/../common/x/..', JSON.stringify(seen));
+    check('the config of the directory realpath returns is what gets scanned', seamTrusted === true
+      && trusted(seamGit, { realpath: realpathTo(path.join(trustDir, 'common-bad')) }) === false, 'expected true then false');
+    check('a commondir whose realpath fails is untrusted', trusted(seamGit, { realpath: realpathTo(new Error('ELOOP')) }) === false, 'expected false');
+    const absGit = gd('seam-abs', { config: plainCfg, commondir: path.join(trustDir, 'common') + '\n' });
+    seen.length = 0;
+    trusted(absGit, { realpath: realpathTo(path.join(trustDir, 'common')) });
+    check('an absolute commondir is passed to realpath as given', seen.length === 1 && seen[0] === path.join(trustDir, 'common'), JSON.stringify(seen));
+
+    // File content must never be mistaken for the reader's own "no such file" or "unusable file"
+    // answers: a commondir that says "absent" names the directory <gitdir>/absent, whose config git
+    // reads and ampline must therefore scan.
+    const named = (name, commondirText, configText) => {
+      const dir = gd(name, { config: plainCfg, commondir: commondirText, [commondirText.trim()]: null });
+      fs.writeFileSync(path.join(dir, commondirText.trim(), 'config'), configText, 'utf8');
+      return trusted(dir);
+    };
+    const filterCfg = '[filter "x"]\n\tclean = cat\n';
+    check('control: a commondir naming a directory with a plain config is trusted (the right directory is read)',
+      named('cd-named-ok', 'named', plainCfg) === true, 'expected true');
+    check('a commondir that says "absent" is followed: a filter in <gitdir>/absent/config is untrusted',
+      named('cd-absent', 'absent', filterCfg) === false && named('cd-absent-nl', 'absent\n', filterCfg) === false, 'expected false');
+    check('a commondir that says "bad" is followed: a filter in <gitdir>/bad/config is untrusted',
+      named('cd-badword', 'bad', filterCfg) === false && named('cd-badword-ok', 'bad', plainCfg) === true, 'expected false then true');
+    check('a commondir that says "absent" with no such directory is untrusted, not "no commondir"',
+      withCommon('cd-absent-missing', 'absent') === false, 'expected false');
+    // A config file whose whole text is "absent" or "bad" is just text: it defines no section, and
+    // git itself refuses it, so nothing runs.
+    check('a config file whose text is exactly "absent" or "bad" is scanned as text, not as a missing or unusable file',
+      trusted(gd('cfg-absent', { config: 'absent' })) === true && trusted(gd('cfg-bad', { config: 'bad' })) === true
+        && trusted(gd('cfg-bad-filter', { config: 'bad\n[filter "x"]\n' })) === false, 'expected true, true, false');
+  } finally {
+    try { fs.rmSync(trustDir, { recursive: true, force: true }); } catch {}
+  }
+}
+
+// ---- Robustness minors: cache keys, git failures, subagent/model/cost edges, walk-up -----------
+// Each is a small input class that used to print junk, collide or stall, plus behavior that had
+// no test at all (config walk-up precedence, cache.js, line2From, token formatting).
+function runRobustnessTests() {
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    robustness: ' + name);
+    else fail('robustness: ' + name, detail);
+  };
+  const plainText = (o) => String(o).replace(/\x1b\[[0-9;]*m/g, '');
+
+  // ---- cache.js: keys, round trips, prune. A child process, because CACHE_DIR is fixed at load. ----
+  const cacheChild = (body) => {
+    const r = spawnSync(process.execPath, ['-e',
+      `const c=require(process.argv[1]+'/lib/cache.js');const fs=require('fs');const path=require('path');` +
+      `const out=(function(){${body}})();process.stdout.write(JSON.stringify(out))`, ROOT],
+    childOptions());
+    try { return JSON.parse(r.stdout); } catch { return { error: (r.stderr || '').slice(0, 300) }; }
+  };
+  const keys = cacheChild(`
+    const k = ['git:/x/a.b', 'git:/x/a_b', 'git:/x/a-b', 'task:s1', 'task:s_1', 'x/1', 'x:1', 'x_1', '', 'a'.repeat(500), 'a'.repeat(499) + 'b'];
+    return k.map((key) => c.safeKey(key));`);
+  check('safeKey returns a hash-suffixed, filename-safe slug for every key',
+    Array.isArray(keys) && keys.every((x) => /^[A-Za-z0-9_-]*-[0-9a-f]{16}$/.test(x) && x.length <= 64), JSON.stringify(keys));
+  check('keys that slug to the same text get different file names',
+    Array.isArray(keys) && new Set(keys).size === keys.length, JSON.stringify(keys));
+  const roundTrip = cacheChild(`
+    c.write('git:/x/a.b', { n: 1 });
+    c.write('git:/x/a_b', { n: 2 });
+    const a = c.read('git:/x/a.b'), b = c.read('git:/x/a_b');
+    const files = fs.readdirSync(c.CACHE_DIR).filter((f) => f.startsWith('git_'));
+    c.remove('git:/x/a.b');
+    return { a: a && a.value, b: b && b.value, files: files.length, goneA: c.read('git:/x/a.b'), stillB: (c.read('git:/x/a_b') || {}).value };`);
+  check('/x/a.b and /x/a_b no longer share one cache file',
+    roundTrip.files === 2 && roundTrip.a && roundTrip.a.n === 1 && roundTrip.b && roundTrip.b.n === 2, JSON.stringify(roundTrip));
+  check('remove deletes only its own key', roundTrip.goneA === null && roundTrip.stillB && roundTrip.stillB.n === 2, JSON.stringify(roundTrip));
+  const missing = cacheChild(`
+    fs.mkdirSync(c.CACHE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(c.CACHE_DIR, c.safeKey('bad') + '.json'), '{not json');
+    return { none: c.read('never-written'), bad: c.read('bad') };`);
+  check('a missing or corrupt entry reads as null', missing.none === null && missing.bad === null, JSON.stringify(missing));
+  const pruned = cacheChild(`
+    const day = 24 * 60 * 60 * 1000;
+    const age = (key, days) => { const p = path.join(c.CACHE_DIR, c.safeKey(key) + '.json'); const t = new Date(Date.now() - days * day); fs.utimesSync(p, t, t); };
+    c.write('prune-old', { v: 1 }); c.write('prune-new', { v: 2 }); c.write('prune-nearly', { v: 3 });
+    age('prune-old', 8); age('prune-nearly', 6);
+    c.prune();
+    return { old: c.read('prune-old'), fresh: (c.read('prune-new') || {}).value, nearly: (c.read('prune-nearly') || {}).value };`);
+  check('prune removes files older than seven days and keeps newer ones',
+    pruned.old === null && pruned.fresh && pruned.fresh.v === 2 && pruned.nearly && pruned.nearly.v === 3, JSON.stringify(pruned));
+
+  // ---- git: a failing `git status` is remembered for 30 s ----
+  const gitProbe = spawnSync('git', ['--version'], { encoding: 'utf8' });
+  if (gitProbe.error || gitProbe.status !== 0) {
+    check('git is available to run the negative-cache tests', false, 'the git binary is needed for these tests');
+  } else {
+    const home = makeTempHome();
+    try {
+      const gitEnvFor = () => {
+        const base = { ...process.env };
+        for (const k of Object.keys(base)) if (k.startsWith('GIT_')) delete base[k];
+        for (const k of ['NO_COLOR', 'FORCE_COLOR', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']) delete base[k];
+        return { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(home, 'gitconfig-global') };
+      };
+      const proj = path.join(home, 'proj');
+      fs.mkdirSync(proj, { recursive: true });
+      const inited = spawnSync('git', ['init', '-q'], { cwd: proj, env: gitEnvFor(), encoding: 'utf8' }).status === 0;
+      const render = () => plainText(spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(inlinePayload({ cwd: proj })), encoding: 'utf8', timeout: 20000, cwd: home, env: gitEnvFor(),
+      }).stdout || '');
+      const cacheDir = path.join(home, '.claude', 'cache', 'ampline');
+      const gitEntries = () => { try { return fs.readdirSync(cacheDir).filter((f) => f.startsWith('git_') && f.endsWith('.json')); } catch { return []; } };
+      const marked = (o) => o.includes('✓') || o.includes('●');
+      const index = path.join(proj, '.git', 'index');
+
+      // git rejects a garbage index, so `git status` fails every time, the way a timeout would.
+      fs.writeFileSync(index, 'garbage that is not a git index\n', 'utf8');
+      const first = render();
+      check('a failing git status still renders the branch, without a marker', inited && first.includes('⎇') && !marked(first), JSON.stringify(first));
+      check('the failure is remembered in the cache', gitEntries().length === 1, JSON.stringify(gitEntries()));
+      fs.rmSync(index, { force: true }); // now git would succeed, but the failure is still fresh
+      const second = render();
+      check('within 30 s git is not asked again (no marker, no 400 ms retry)', second.includes('⎇') && !marked(second), JSON.stringify(second));
+      const file = path.join(cacheDir, gitEntries()[0] || 'missing');
+      const old = new Date(Date.now() - 31 * 1000);
+      try { fs.utimesSync(file, old, old); } catch {}
+      const third = render();
+      check('after 30 s the failure expires and git is tried again', marked(third), JSON.stringify(third));
+      check('a success replaces the failure entry', (() => { try { return JSON.parse(fs.readFileSync(file, 'utf8')).dirty === false; } catch { return false; } })(), 'expected the entry to hold a status');
+    } finally {
+      try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    }
+  }
+
+  // ---- subagents: token formatting, columns, truncation ----
+  const { renderTaskRow, renderSubagentLine } = require('../lib/segments/subagents');
+  const row = (extra, columns) => plainText(renderTaskRow({ id: 't', label: 'worker', ...extra }, columns === undefined ? 120 : columns));
+  const tokensOf = (n) => { const m = row({ tokenCount: n }).match(/worker (.*)$/); return m ? m[1] : ''; };
+  for (const [n, want] of [
+    [1, '1'], [999, '999'], [1000, '1k'], [1049, '1k'], [1050, '1.1k'], [14046, '14k'], [999949, '999.9k'],
+    [999950, '1M'], [999999, '1M'], [1000000, '1M'], [1049999, '1M'], [1050000, '1.1M'], [123456789, '123.5M'],
+    [999949999, '999.9M'], [999950000, '1G'], [999999999, '1G'], [1000000000, '1G'], [1500000000, '1.5G'], [12345678901, '12.3G'],
+  ]) check('a token count of ' + n + ' shows ' + want, tokensOf(n) === want, JSON.stringify(tokensOf(n)));
+  for (const [label, n] of [
+    ['zero', 0], ['negative', -5], ['a fraction', 0.5], ['a tiny fraction', 1e-7], ['1.5', 1.5], ['NaN', NaN], ['Infinity', Infinity],
+    ['an unsafe integer', 2 ** 60], ['1e27', 1e27], ['a string', '5000'], ['true', true], ['null', null], ['an object', {}],
+  ]) check('a token count of ' + label + ' is left out', row({ tokenCount: n }) === '↳ worker', JSON.stringify(row({ tokenCount: n })));
+  check('the largest safe integer prints without exponent notation', /^\d+(\.\d)?G$/.test(tokensOf(Number.MAX_SAFE_INTEGER)), tokensOf(Number.MAX_SAFE_INTEGER));
+
+  // The name budget is 24 characters without a usable width, 32 for a wide one (31 letters and an ellipsis).
+  const longLabel = 'w'.repeat(60);
+  const nameRun = (columns) => {
+    const out = renderSubagentLine({ columns, tasks: [{ id: 't', label: longLabel }] });
+    return out ? (plainText(JSON.parse(out.trim()).content).match(/w+/) || [''])[0].length : -1;
+  };
+  check('columns as a finite positive integer sets the name budget', nameRun(100) === 31 && nameRun(60) === 23, nameRun(100) + ',' + nameRun(60));
+  for (const [label, v] of [['a numeric string', '100'], ['true', true], ['a fraction', 100.5], ['zero', 0], ['negative', -100], ['NaN', NaN], ['Infinity', Infinity], ['an array', [100]], ['an object', { n: 100 }], ['null', null]]) {
+    check('subagent columns as ' + label + ' is ignored (default name budget)', nameRun(v) === 23, String(nameRun(v)));
+  }
+  const huge = 'x'.repeat(1024 * 1024) + String.fromCodePoint(0x1f680).repeat(1000);
+  const hugeRow = row({ label: huge });
+  check('a 1 MB label is cut to the budget with an ellipsis', hugeRow.includes('…') && Array.from(hugeRow).length < 60, String(Array.from(hugeRow).length));
+  const rocketRow = row({ label: String.fromCodePoint(0x1f680).repeat(100) });
+  check('truncation never splits an emoji', !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(rocketRow) && rocketRow.includes('…'), JSON.stringify(rocketRow));
+
+  // ---- model: a name that is only combining marks is not a name ----
+  const { renderModelSegment } = require('../lib/segments/model');
+  const modelOut = (m) => plainText(renderModelSegment({ input: { model: m } }) || '');
+  const marks = String.fromCharCode(0x301).repeat(3);
+  check('a combining-marks-only display_name falls back to the id',
+    modelOut({ id: 'claude-sonnet-5-5', display_name: marks }) === 'claude-sonnet-5-5', JSON.stringify(modelOut({ id: 'claude-sonnet-5-5', display_name: marks })));
+  check('a combining-marks-only display_name and id leave no segment', renderModelSegment({ input: { model: { id: marks, display_name: marks } } }) === null, 'expected null');
+  check('a name with a base letter plus marks still shows', modelOut({ display_name: 'e' + marks }) === 'e' + marks, JSON.stringify(modelOut({ display_name: 'e' + marks })));
+
+  // ---- cost: the cap applies after rounding ----
+  const { renderCostSegment } = require('../lib/segments/cost');
+  const costOut = (usd, extra) => plainText(renderCostSegment({ input: { cost: { total_cost_usd: usd, ...(extra || {}) } } }) || '');
+  check('999999999.999 does not round up to $1000000000.00', costOut(999999999.999) === '', JSON.stringify(costOut(999999999.999)));
+  check('999999999.995 is left out too', costOut(999999999.995) === '', JSON.stringify(costOut(999999999.995)));
+  check('999999999.994 still prints', costOut(999999999.994) === '$999999999.99', JSON.stringify(costOut(999999999.994)));
+  check('a normal cost still prints', costOut(1.236) === '$1.24' && costOut(0) === '$0.00', JSON.stringify([costOut(1.236), costOut(0)]));
+  const withLines = costOut(1e9, { total_lines_added: 3, total_lines_removed: 1 });
+  check('a capped cost leaves the line counts', withLines === '+3/-1', JSON.stringify(withLines));
+
+  // ---- config: walk-up precedence and depth, line2From ----
+  const { validateAndMerge, MAX_WALK_UP } = require('../lib/config');
+  check('the walk-up depth is one exported constant', Number.isInteger(MAX_WALK_UP) && MAX_WALK_UP > 0, String(MAX_WALK_UP));
+  // `files` maps a path inside a throwaway home to a config (object or raw text); renders from `cwdParts`.
+  const configRun = ({ files, cwdParts }) => {
+    const h = makeTempHome();
+    try {
+      for (const [rel, content] of Object.entries(files)) {
+        const p = path.join(h, rel);
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, typeof content === 'string' ? content : JSON.stringify(content), 'utf8');
+      }
+      const r = spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(inlinePayload({ cwd: path.join(h, ...cwdParts) })), encoding: 'utf8', timeout: 20000, cwd: h,
+        env: { ...cleanEnv(), HOME: h, USERPROFILE: h, COLUMNS: '200' },
+      });
+      return plainText(r.stdout || '');
+    } finally {
+      try { fs.rmSync(h, { recursive: true, force: true }); } catch {}
+    }
+  };
+  const seg = { segments: ['model', 'context'] };
+  const nested = configRun({
+    files: { 'a/.amplinerc.json': { ...seg, separator: ' AA ' }, 'a/b/c/.amplinerc.json': { separator: ' CC ' } },
+    cwdParts: ['a', 'b', 'c'],
+  });
+  check('the nearest .amplinerc.json wins', nested.includes(' CC ') && !nested.includes(' AA '), JSON.stringify(nested));
+  check('files are never merged: the segment list of a parent file is not applied to the nearest one',
+    nested.split(' CC ').length > 2, JSON.stringify(nested));
+  const fallthrough = configRun({
+    files: { 'a/.amplinerc.json': { ...seg, separator: ' AA ' }, 'a/b/.amplinerc.json': '{ this is not json' },
+    cwdParts: ['a', 'b', 'c'],
+  });
+  check('an unparseable nearer config is skipped and the walk continues upward', fallthrough.includes(' AA '), JSON.stringify(fallthrough));
+  const climbed = configRun({ files: { 'a/.amplinerc.json': { ...seg, separator: ' AA ' } }, cwdParts: ['a', 'b', 'c'] });
+  check('a config in an ancestor applies', climbed.includes(' AA '), JSON.stringify(climbed));
+  const deep = (n) => ['p', ...Array.from({ length: n }, () => 'd')];
+  const planted = { 'p/.amplinerc.json': { ...seg, separator: ' PP ' } };
+  check('a config ' + (MAX_WALK_UP - 5) + ' levels up is found', configRun({ files: planted, cwdParts: deep(MAX_WALK_UP - 5) }).includes(' PP '), 'expected the config');
+  check('a config more than ' + MAX_WALK_UP + ' levels up is not looked for', !configRun({ files: planted, cwdParts: deep(MAX_WALK_UP + 3) }).includes(' PP '), 'expected the default');
+
+  // line2From: where the second line starts, and what happens for a name that cannot be used.
+  const names = ['dir', 'model', 'context', 'cost'];
+  check('line2From naming a listed segment is kept', validateAndMerge({ segments: names, line2From: 'context' }).line2From === 'context', 'kept');
+  check('line2From not in the list falls back to fiveHour when that is listed',
+    validateAndMerge({ segments: ['dir', 'fiveHour', 'cost'], line2From: 'weekly' }).line2From === 'fiveHour', 'fiveHour');
+  check('line2From not in the list, with no fiveHour, falls back to the middle segment',
+    validateAndMerge({ segments: names, line2From: 'weekly' }).line2From === 'context'
+      && validateAndMerge({ segments: ['dir', 'model', 'cost'] }).line2From === 'model', 'middle');
+  check('a non-string line2From falls back the same way',
+    [5, null, {}, [], true].every((v) => validateAndMerge({ segments: names, line2From: v }).line2From === 'context'), 'middle');
+  check('line2From for a segment removed from the list follows the list, not the allowlist',
+    validateAndMerge({ segments: ['dir', 'cost'], line2From: 'git' }).line2From === 'cost', 'middle of two');
+  check('a single-segment list uses that segment', validateAndMerge({ segments: ['dir'], line2From: 'cost' }).line2From === 'dir', 'dir');
+  const wrapRun = (config, columns) => {
+    const h = makeTempHome();
+    try {
+      fs.writeFileSync(path.join(h, '.amplinerc.json'), JSON.stringify(config), 'utf8');
+      const r = spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(inlinePayload({ cwd: h, cost: { total_cost_usd: 1.5 } })), encoding: 'utf8', timeout: 20000, cwd: h,
+        env: { ...cleanEnv(), HOME: h, USERPROFILE: h, COLUMNS: String(columns) },
+      });
+      return plainText(r.stdout || '').trim();
+    } finally {
+      try { fs.rmSync(h, { recursive: true, force: true }); } catch {}
+    }
+  };
+  const three = { segments: ['model', 'context', 'cost'] };
+  const wrapped = wrapRun({ ...three, line2From: 'cost' }, 20);
+  check('line2From starts the second line at that segment when the line is too wide',
+    wrapped.split('\n').length === 2 && wrapped.split('\n')[0].startsWith('Haiku 5.5') && wrapped.split('\n')[1] === '$1.50', JSON.stringify(wrapped));
+  check('the same config stays on one line when it fits', !wrapRun({ ...three, line2From: 'cost' }, 200).includes('\n'), 'one line');
+  check('line2From set to the first segment never wraps', !wrapRun({ ...three, line2From: 'model' }, 20).includes('\n'), 'one line');
+  check('a line2From segment that renders nothing leaves a single line',
+    !wrapRun({ segments: ['model', 'context', 'fiveHour'], line2From: 'fiveHour' }, 20).includes('\n'), 'one line');
+
+  // The git walk-up uses the same depth as the config walk-up.
+  const gitDepth = (n) => {
+    const h = makeTempHome();
+    try {
+      const top = path.join(h, 'g');
+      fs.mkdirSync(path.join(top, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(top, '.git', 'HEAD'), 'ref: refs/heads/walkup\n', 'utf8');
+      const r = spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(inlinePayload({ cwd: path.join(top, ...Array.from({ length: n }, () => 'd')) })), encoding: 'utf8', timeout: 20000, cwd: h,
+        env: { ...cleanEnv(), HOME: h, USERPROFILE: h, COLUMNS: '200' },
+      });
+      return plainText(r.stdout || '');
+    } finally {
+      try { fs.rmSync(h, { recursive: true, force: true }); } catch {}
+    }
+  };
+  check('a repository ' + (MAX_WALK_UP - 5) + ' levels up is found', gitDepth(MAX_WALK_UP - 5).includes('⎇ walkup'), JSON.stringify(gitDepth(MAX_WALK_UP - 5)));
+  check('a repository more than ' + MAX_WALK_UP + ' levels up is not looked for', !gitDepth(MAX_WALK_UP + 3).includes('⎇'), JSON.stringify(gitDepth(MAX_WALK_UP + 3)));
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -1493,6 +2621,11 @@ function main() {
   runInjectionTests();
   runInjectionFollowupTests();
   runInvisibleCharacterTests();
+  runConfigHardeningTests();
+  runGitTrustTests();
+  runRobustnessTests();
+  runInstallerTests({ ROOT, BIN, makeTempHome, cleanEnv, fail });
+  runExportsTests();
   runSourceHygieneTests();
 
   // NO_COLOR must strip every escape sequence.
@@ -1501,13 +2634,15 @@ function main() {
     input: fs.readFileSync(path.join(FIXTURES, 'full.json'), 'utf8'),
     encoding: 'utf8',
     timeout: 10000,
-    env: { ...process.env, HOME: home, USERPROFILE: home, COLUMNS: '120', NO_COLOR: '1' },
+    cwd: home,
+    env: { ...cleanEnv(), HOME: home, USERPROFILE: home, COLUMNS: '120', NO_COLOR: '1' },
   });
   try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
   if (res.status !== 0) fail('NO_COLOR', `exit code ${res.status}`);
   else if (/\x1b\[/.test(res.stdout)) fail('NO_COLOR', 'output still contains ANSI escapes');
   else console.log('  ok    NO_COLOR');
 
+  if (scratchHome) { try { fs.rmSync(scratchHome, { recursive: true, force: true }); } catch {} }
   console.log(failures ? `\n${failures} failure(s)` : '\nAll green.');
   process.exit(failures ? 1 : 0);
 }

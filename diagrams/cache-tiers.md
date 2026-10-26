@@ -75,11 +75,11 @@ flowchart LR
 | Consumer | Key | Fresh | Stale | What a miss costs | Source |
 |---|---|---|---|---|---|
 | Usage | `usage` | none, write-through | 24h, plus a `resets_at` rollover check | nothing to show until the next payload carries `rate_limits` | `lib/usage.js` |
-| Git state | `git:<gitdir>` | 5s | 60s | one `git status --porcelain=v2` subprocess, 400ms timeout | `lib/segments/git.js` |
+| Git state | `git:<gitdir>` | 5s | 60s; a failure marker lasts 30s | one `git status --porcelain=v2` subprocess, 400ms timeout | `lib/segments/git.js` |
 | Current task | `task:<session_id>` | 3s | 15s | one directory listing plus one file read in `~/.claude/todos/` | `lib/segments/task.js` |
 
 The constants in the code match the "Cache TTLs" table in [`../CLAUDE.md`](../CLAUDE.md):
-`MAX_STALE_MS` is 24 hours in `usage.js`, `GIT_FRESH_MS` and `GIT_STALE_MS` are 5000 and 60000 in
+`MAX_STALE_MS` is 24 hours in `usage.js`, `GIT_FRESH_MS`, `GIT_STALE_MS` and `GIT_FAILURE_MS` are 5000, 60000 and 30000 in
 `git.js`, and `FRESH_MS` and `STALE_MS` are 3000 and 15000 in `task.js`. No other segment reads
 or writes the cache. The branch name itself is never cached, because `git.js` reads it straight
 from `.git/HEAD` on every render.
@@ -102,13 +102,17 @@ flowchart TD
     end
 
     subgraph Git["git state"]
-        G1{"cached age<br/>under 5s?"}
+        G0{"entry is a failure marker<br/>under 30s old?"}
+        G1{"entry is a status<br/>under 5s old?"}
         G2["return cached value<br/>no subprocess"]
         G3["run git status<br/>400ms timeout"]
         G4["write result<br/>return it"]
-        G5{"git failed and<br/>cached age under 60s?"}
-        G6["return cached value"]
-        G7["return null, no sync or dirty marker"]
+        G5{"git failed and<br/>a status under 60s old?"}
+        G6["return that status<br/>no marker written"]
+        G7["write failure marker<br/>return null, no sync or dirty marker"]
+        G8["return null<br/>no subprocess"]
+        G0 -->|"yes"| G8
+        G0 -->|"no"| G1
         G1 -->|"yes"| G2
         G1 -->|"no"| G3
         G3 -->|"ok"| G4
@@ -126,12 +130,15 @@ as a cold start before the first API response. In that case the entry is used on
 describes a window that has rolled over, so it is wrong and not merely old), and whatever is left
 is returned with `stale: true`. The rendering of that stale flag is covered in `DECISIONS.md` D11.
 
-**Git has all three tiers.** Under 5 seconds it returns the cached ahead, behind and dirty state
-and runs nothing. Past that it runs the one `git status` call and overwrites the entry. If the call
-fails or times out, an entry up to 60 seconds old is still used, and anything older yields `null`,
-so the branch renders without the sync arrows and the dirty marker. A successful call always
-rewrites the entry, so a repo that keeps rendering stays in the Fresh state. See `DECISIONS.md`
-D20 for why this is the only subprocess.
+**Git has all three tiers, plus a failure marker.** Under 5 seconds it returns the cached ahead,
+behind and dirty state and runs nothing. Past that it runs the one `git status` call and overwrites
+the entry. If the call fails or times out and a status up to 60 seconds old exists, that status is
+used and left in place; it is not replaced by a marker, so a slow repo keeps paying the 400ms
+timeout until that status ages out. Otherwise the entry is overwritten with `{ "failed": true }`,
+the render returns `null` for the state (the branch shows without the sync arrows and the dirty
+marker), and for the next 30 seconds the marker is honored and the subprocess is not run at all.
+After that the call is tried again. A successful call always rewrites the entry, so a repo that
+keeps rendering stays in the Fresh state. See `DECISIONS.md` D20 for why this is the only subprocess.
 
 **Task has a fresh tier and a nominal stale tier.** Under 3 seconds the cached string is returned,
 and an empty string means "no in-progress todo" and renders nothing. Past that, `readTask()`
@@ -166,9 +173,10 @@ the caller does the work again.
 
 **Windows filenames.** Keys like `task:<id>` and `git:<path>` contain characters Windows will not
 accept in a filename, and `:` is NTFS alternate data stream syntax, so such a name does not round
-trip. `safeKey()` replaces every character outside `[A-Za-z0-9_-]` with `_`. If the result is
-longer than 64 characters, it keeps the first 47 characters and appends a dash and 16 hex digits
-of the SHA-1 of the original key, so a long repo path still maps to a stable 64 character name.
+trip. `safeKey()` replaces every character outside `[A-Za-z0-9_-]` with `_`, keeps the first 47
+characters of the result, and always appends a dash and 16 hex digits of the SHA-1 of the original
+key. The hash is what keeps `/x/a.b` and `/x/a_b`, which slug to the same text, in separate files,
+and it bounds every name at 64 characters however long the repo path is.
 
 **`prune()`** walks the cache directory and deletes every file whose mtime is more than 7 days
 old, which also sweeps up any `.tmp` file left behind by a crash. Nothing else deletes per-session
@@ -191,4 +199,4 @@ deliberately synchronous. [`../CLAUDE.md`](../CLAUDE.md) flags this and it is no
 See also [`deployment-security.md`](deployment-security.md).
 
 ---
-_Last updated: 2026-10-07 · reflects v0.6.0_
+_Last updated: 2026-10-26 · reflects the unreleased 1.0.0 work_

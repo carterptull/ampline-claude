@@ -33,6 +33,14 @@ npx ampline-claude --install
 That's it. It installs itself into `~/.claude/settings.json` and copies its runtime to
 `~/.claude/hooks/ampline-claude/`. Restart Claude Code or start a new session to see it.
 
+The installer writes the absolute path of the Node that ran it, so the statusline still works when
+Claude Code is launched without your shell's `PATH`. If that Node sits in a directory that holds a
+single version (Homebrew's `Cellar`, or the version folders of nvm, fnm, volta, asdf, nodenv, mise
+or snap), the installer also prints the path it wrote and a reminder to re-run
+`npx ampline-claude --install` after you upgrade Node. Where a stable `PATH` entry such as
+`/opt/homebrew/bin/node` leads to the same binary, that entry is written instead of the versioned
+one.
+
 The bare `npx ampline-claude` also installs, but only from an interactive terminal. Use
 `--install` in scripts, in CI, or any time you are not sure. It works everywhere.
 
@@ -79,11 +87,17 @@ Re-runs the installer, which replaces the installed copy in place.
 npx ampline-claude uninstall
 ```
 
-Removes the `statusLine`/`subagentStatusLine` entries from `settings.json` (backing up the
-file first), deletes `~/.claude/hooks/ampline-claude/`, and clears the cache. If your
-`settings.json` points at a different statusline, uninstall refuses to touch it. Installing
-works a bit differently though: installing over an existing foreign `statusLine` prints a
-notice and then replaces it.
+Removes the `statusLine`/`subagentStatusLine` entries ampline wrote from `settings.json` (backing
+up the file first; if the backup cannot be made, nothing is changed), deletes
+`~/.claude/hooks/ampline-claude/`, and clears the cache. If the entries are already gone, it still
+deletes the runtime copy and the cache. Only a command that runs the installed copy counts as
+ampline's: if your `settings.json` points at a different statusline, including your own wrapper
+script, uninstall leaves the file and the runtime copy alone. If only one of the two entries is
+ampline's, that one is removed, and the runtime copy stays for as long as the other entry still
+names `ampline-claude`. Installing works a bit differently
+though: installing over an existing foreign `statusLine` or `subagentStatusLine` prints a notice
+and then replaces it, after backing the file up. Backups are named
+`settings.json.backup.<timestamp>`, and only the newest five of those are kept.
 
 Other flags: `npx ampline-claude --version` prints the installed version, `--help` prints
 usage. `--install`/`--uninstall` are the explicit, script-safe forms of the bare commands above.
@@ -184,8 +198,10 @@ See `DECISIONS.md` D40.
 ## Configuration
 
 Drop a `.amplinerc.json` in your project root (or `~/.amplinerc.json` for a global default).
-The nearest one wins. It searches from the current directory upward to the filesystem root,
-then your home directory. Files don't merge together.
+The nearest one wins. The search starts at the directory Claude Code reports for the session
+(`workspace.current_dir`, or `cwd`), checks at most 30 directories, starting with the session
+directory, and then tries your home directory. Files don't merge together. Finding the git
+repository for the branch uses the same 30-directory limit.
 
 ```json
 {
@@ -258,7 +274,11 @@ More detail:
 
 No. It runs entirely locally, no API calls of any kind. Rendering is a handful of file reads
 and, at most, one cached `git status` call every 5 seconds. Typical render time is a few
-milliseconds. The worst case, a cache miss on a large repo, is capped at 400ms.
+milliseconds. The worst case, a cache miss on a large repo, is capped at 400ms, and a `git status`
+that fails or times out is not retried for 30 seconds, so a slow repo does not pay for it on every render.
+The cost of that: after one transient failure the branch shows without its marker for up to 30 seconds.
+And if an earlier result between 5 and 60 seconds old exists, it is shown instead and no pause is
+started, so a repo that is always slow still pays the 400ms until that result ages out.
 </details>
 
 <details>
@@ -283,6 +303,24 @@ gating on that variable would silently break usage bars for them.
 
 No, and it makes no network requests at all. Usage data comes only from the payload Claude
 Code already sends on stdin.
+</details>
+
+<details>
+<summary>Does ampline run git in my repository?</summary>
+
+The branch is read from `.git/HEAD` without running anything. The ahead/behind/dirty marker comes
+from one `git status` call, and git follows the repository's own configuration, as it does when
+you run it yourself. ampline-claude turns off `core.fsmonitor` for that call, does not let it
+write the index, does not run git inside submodules (a submodule with a dirty work tree does not
+set the dirty marker; a moved submodule commit still does), starts git in the work tree it
+inspected and sets a ceiling directly above it, so that if git rejects that repository it fails
+rather than climbing into another one (git keeps its own ownership check), and skips the call
+entirely when the repository's own config defines a content filter or an include. Global and
+system config (a Git LFS filter you installed, for example) are yours and are not checked. This
+narrows what a repository can make git do on every render; it does not remove it and is not a
+sandbox. The marker is also left out when the repository sits in a folder whose path contains
+`:` (macOS and Linux) or `;` (Windows), because git would read that as two ceilings. Treat a directory you did not clone yourself (an unpacked archive, for example) as you
+would before running git in it.
 </details>
 
 <details>

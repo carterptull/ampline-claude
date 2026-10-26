@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `renderBar`. These are additions to declared interfaces; `resolveUsage` is unchanged.
 
 ### Changed
+- **`lib/` is now internal: the package declares `exports`.** `package.json` exports only
+  `./package.json`, so `require('ampline-claude/lib/...')` throws `ERR_PACKAGE_PATH_NOT_EXPORTED`.
+  The `ampline-claude` command, `npx ampline-claude` and `require('ampline-claude/package.json')`
+  are unaffected. If you imported a module from `lib/`, it was never a supported interface and
+  may change in any release. See `DECISIONS.md` D45.
 - **Known limitations updated for macOS.** v0.7.0 rendering, including the pace marker glyph,
   is confirmed working on a real Mac, and the marker was also confirmed in a live Claude Code
   session on Windows. See `DECISIONS.md` D39.
@@ -29,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged; only the copyright holder named in `LICENSE` and the README footer differ.
 
 ### Fixed
+- **A huge or special file, or an oversized config value, no longer floods or hangs the render.** `segments` is deduplicated (nine at most), `separator` is capped at 16 characters, `maxBranchLength` and `maxTaskLength` are floored and clamped at 200 (a value under 5 or one that is not a finite number falls back to the default, 24 and 40), and `.amplinerc.json`, the `.git` file and `HEAD` are read only if they are regular files of at most 64 KB. Input on stdin is capped at 8 million characters (UTF-16 units of the decoded text, about 8 MB for ASCII), past which nothing is rendered and the exit code stays 0.
 - **The subagent status line now uses Claude Code's documented output format.** `--subagent`
   printed bare text rows, but Claude Code expects one JSON line per row, `{"id","content"}`, and
   keeps its own default row for anything else, so the custom rows were most likely never shown.
@@ -62,6 +68,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other newer emoji as two cells and combining or zero-width characters as none, so the line
   wraps when it should. A test now fails if such a character appears in the source. See
   `DECISIONS.md` D43.
+- **The installer is safer, and now has tests.** A backup that cannot be written now stops the install or
+  uninstall with exit 1, instead of rewriting `settings.json` with no way back. The install takes its
+  backup before it touches anything, so a failed backup leaves the installed copy as it was. Only the
+  files ampline itself wrote (`settings.json.backup.<timestamp>`) are pruned, so your own
+  `settings.json.backup.*` copies are left alone. Only the commands the installer writes count as
+  ampline's, so a wrapper such as `ampline-claude-wrap.sh` is announced before an install replaces
+  it and is never deleted by uninstall. A foreign `subagentStatusLine` is announced too. The
+  settings temp file is created with the original file's permissions, and `settings.json` is read
+  again just before it is written, which shrinks, but does not remove, the window in which a change
+  Claude Code makes at the same moment could be lost. Staging directories left by a crashed install
+  are cleaned up once they are over a minute old and their process is gone. Uninstall now also
+  removes the runtime copy and cache when `settings.json` no longer lists ampline, and keeps them
+  while a remaining entry of yours (a wrapper script, say) still names ampline-claude. A new suite
+  runs the installer, uninstaller and `--help`/`--version` inside throwaway homes. See
+  `DECISIONS.md` D44.
+- **The installed command is more likely to survive a Homebrew upgrade.** Homebrew resolves Node to a
+  versioned `Cellar` path that is removed on upgrade, which left a blank statusline. When a stable
+  `PATH` entry (for example `/opt/homebrew/bin/node`) leads to the same binary, the installer writes
+  that one. This follows from how Homebrew lays out Node and is tested through injected paths only; it
+  has not been run on a Mac. A normal install prints exactly the same lines as before. Only when the
+  Node in use lives in a versioned directory (or no absolute path could be used) does it add the path it
+  wrote and a reminder to re-run `--install` after upgrading Node.
+- **The test suite no longer depends on the developer's machine.** Spawned renders now run with
+  `CLAUDE_CONFIG_DIR` removed and with the throwaway home as the working directory, and each throwaway
+  home starts with an empty `.amplinerc.json`, so a real `~/.claude` or a `.amplinerc.json` in the user
+  profile above the temp directory cannot change a result.
+- **Cache files no longer collide, and a failing `git status` is remembered.** Every cache key now carries a hash of itself, so repositories at `/x/a.b` and `/x/a_b` no longer share one `git:` entry (old entries are simply left to expire). A `git status` that fails or times out is not retried for 30 seconds, so a slow repository no longer pays the 400 ms timeout on every render; the branch still shows, without the marker, so one transient failure hides the marker for up to 30 seconds. If a result between 5 and 60 seconds old exists it is shown instead and no pause starts, so an always-slow repository pays the timeout until that result ages out.
+- **Subagent rows reject malformed counts and widths.** A token count must be a positive safe integer (`0.5`, `1e-7` and `1e27` are left out) and steps to `M` from 999,950 and to `G` from 999,950,000 instead of printing `1000k` or `1000M`. `columns` must be a positive integer number, so `true` and `"500"` are ignored. A very long label is cut before it is expanded.
+- **A name of only combining marks, and a cost that rounds up to the cap, no longer print.** A model `display_name` that has no visible width falls back to the model id, and a cost of `999999999.999` is left out instead of printing `$1000000000.00`.
+- **The git repository search and the config search stop at the same depth.** Each checks at most 30 directories, starting with the session directory (the git search used 50). The config search then tries your home directory.
+- **Uninstall now recognises the command the installer wrote for any Node binary name.** A Node installed as `nodejs` (Debian and Ubuntu) or `node24` was written by `--install` but not recognised as ampline's by `--uninstall`, which left the entries behind, and a second `--install` announced them as another statusline's. The interpreter names the installer can write (`node`, `nodejs`, and versioned names such as `node24`, `node-24.1` or `node-v24.1.0`, each with an optional `.exe`, and the file name of the running Node) now count; anything else after the name does not, so wrappers such as `node-wrapper.sh`, `node2-wrapper.sh` and `node24.cmd` are still foreign. See `DECISIONS.md` D44.
+
+### Security
+- **`git status` is no longer run in a repository whose own config defines a filter or an include.**
+  `git status` also honors content filter drivers and `include`/`includeIf` files named in a
+  repository's own config, which `-c core.fsmonitor=` does not cover. The precondition is a
+  repository directory that arrives with its own config: an extracted archive, or an embedded bare
+  directory inside a clone. Before spawning `git status`, ampline now reads the repo-local config
+  (`config`, `config.worktree`, and for a linked worktree the common directory's, found through
+  `commondir`). If it defines a `[filter ...]`, `[include]` or `[includeIf ...]` section, or cannot
+  be read and parsed, the call is skipped: the branch still shows from `HEAD`, with no
+  ahead/behind/dirty marker and no cache entry. Global and system config are not scanned, and
+  everything else in a repository's own config is trusted as when you run git yourself
+  there. See `DECISIONS.md` D20 (follow-up).
+- **The `git status` call is started in the scanned work tree, with a ceiling above it, and stays
+  out of submodules.** git is run in the directory that holds the `.git` entry ampline read, by its
+  real path (so a work tree reached through a symlink or junction is handled), with
+  `GIT_CEILING_DIRECTORIES` set to that real path's parent, so that if git rejects the entry it
+  fails instead of climbing into a repository ampline never scanned; the call is skipped if the
+  real path cannot be resolved. Its own ownership (`safe.directory`) check still applies. It also gets
+  `-c safe.bareRepository=explicit`, `--ignore-submodules=dirty` (submodules have their own config,
+  which is not scanned), `GIT_NO_LAZY_FETCH=1`, and none of the inherited variables that name a
+  repository (`GIT_DIR`, `GIT_WORK_TREE` and the like). ampline's reading of `.git` files and
+  `commondir` is stricter than git's: any value with extra whitespace, a carriage return or an
+  embedded newline skips the call; both are resolved the way git resolves them (symlinks followed
+  before `..`); and a `.git` directory that git itself would reject (a `HEAD` that does not start
+  with `ref:` or an object id, exactly as written with no leading whitespace skipped, or no
+  searchable `objects/` or `refs/`) skips it. A bare-looking directory between the working
+  directory and the repository also skips it. The scan reduces, and does not eliminate, what a
+  repository's own configuration can make git do; it is not a sandbox.
+  Older git: before 2.39.4/2.45.1 (depending on the release series) `GIT_NO_LAZY_FETCH` is
+  ignored, so a partial clone can fetch during the status call, and a lazy fetch can run the
+  transport the repository's own config names; before 2.38 `safe.bareRepository` is ignored. Both
+  are named in the D20 follow-up. A partial clone is a normal repository, so it is not skipped.
+  The call is also skipped, and the marker is left out, when the parent of the work tree's real
+  path contains the path-list separator (`:` on macOS and Linux, `;` on Windows), because git would
+  split it into two ceilings.
+  Trade-off: a submodule whose work tree is dirty no longer sets the dirty marker; a moved
+  submodule commit still does.
+- **Correction to the 0.3.0 entry below.** It said the `core.fsmonitor` override stopped a
+  repository's `.git/config` from running a command on every render. That was too broad:
+  the override closes only the fsmonitor path. Filters and includes were not covered until this
+  release.
 
 ## [0.6.0] - 2026-10-07
 
@@ -169,6 +248,8 @@ each item below.
 - `git status` ran with no protection against a repo's own `.git/config` `core.fsmonitor` hook
   command, which could execute arbitrary code on every render for a hostile extracted archive.
   Hardened the invocation with `-c core.fsmonitor=` and `--no-optional-locks`.
+  _Correction (2026-10-25): this closed only the fsmonitor path. Filter drivers and includes in a
+  repository's own config were not covered until the `[Unreleased]` Security entry above._
 - Branch names, todo text, and subagent labels truncated near a surrogate pair could render a
   broken `�` character. Truncation now splits on code points, not UTF-16 units.
 - A PR payload shaped like `{ number: null }` rendered a phantom `#0`. `pr.js` now requires a

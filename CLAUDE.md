@@ -48,6 +48,8 @@ bin/ampline-claude.js     Entry point. Six argv-driven paths: --help, --version,
                            default statusline path (TTY -> installer, piped stdin -> render).
                            `if (require.main === module) main();` guards against a bare
                            `require('ampline-claude')` triggering a real install as a side effect.
+                           `package.json` declares `exports: { "./package.json": ... }` and no `main`:
+                           `lib/` is internal and unimportable by package path (D45). `bin` is unaffected.
 lib/
   claudeDir.js              Resolves CLAUDE_CONFIG_DIR (falls back to ~/.claude). Every other
                             module that touches the config directory goes through this — never
@@ -57,7 +59,14 @@ lib/
   bar.js                   Block-bar renderer shared by context/fiveHour/weekly. BAR_WIDTH = 8.
                             Optional pace marker (┃) for the usage bars; glyph-only so it survives NO_COLOR.
   cache.js                 Two-tier fresh/stale file cache. Handles the Windows ':' filename bug
-                            and atomic writes (two processes — main + subagent — can race).
+                            (file names are a slug of the key plus a hash of it, so keys that slug
+                            alike never collide) and atomic writes (two processes — main + subagent —
+                            can race).
+  safeRead.js              readSmallTextFile(path, maxBytes?) -> string | null. The only way to read
+                            a file from a checkout we do not control (.amplinerc.json, .git, HEAD,
+                            repo-local git config): regular files of at most 64 KB by default,
+                            checked again on the open descriptor (opened non-blocking); null on anything
+                            else. The frozen limits are in D48.
   usage.js                 stdin rate_limits -> write-through cache -> resolveUsage(). Synchronous.
                             Also the window pace math: elapsedFraction, paceRampPct (D39, D40).
   config.js                .amplinerc.json loader: walk up from cwd, then home, first file wins.
@@ -68,15 +77,45 @@ lib/
   install.js               settings.json merge + backup + runtime copy to ~/.claude/hooks/.
                             Writes through a symlinked settings.json rather than replacing it,
                             and preserves the original file's permission bits across the atomic
-                            rename.
+                            rename (the temp file is created with that mode). Backs up before
+                            anything is changed and aborts if it cannot; prunes only the exact
+                            settings.json.backup.<stamp> names to the newest 5. `pointsAtUs` matches
+                            only `node "<dir>/hooks/ampline-claude/bin/ampline-claude.js"` (+ --subagent).
+                            `chooseNodePath` is the pure node-path chooser and `installMessages` the
+                            pure output list (D44): a normal install prints exactly v0.6.0's six lines
+                            (the website embeds them), and the Node/Note lines appear only for a
+                            versioned or bare-`node` choice. Reads settings.json again just before
+                            writing. Uninstall also clears the runtime and cache when settings no
+                            longer list ampline, but keeps them while a remaining foreign entry still
+                            names ampline-claude. Tests: test/installer.js (throwaway homes).
   segments/
     model.js                Model name + effort, wheel color.
     context.js               Context-window usage bar.
     rateLimits.js             5-hour + weekly usage bars, with the pace marker and opt-in paceColors.
     git.js                     Branch (from .git/HEAD, no subprocess) + ahead/behind/dirty
-                               (one cached `git status --porcelain=v2` call, run with
-                               `-c core.fsmonitor=` and `--no-optional-locks` — a repo's own
-                               .git/config cannot run a hook command through this call).
+                               (one cached `git status --porcelain=v2` call from
+                               `buildStatusArgs`: fsmonitor overridden, `--no-optional-locks`
+                               (a real defense: no index write, so no post-index-change hook),
+                               `--ignore-submodules=dirty` (a dirty submodule work tree does not
+                               set the marker), `safe.bareRepository=explicit`; run with cwd = the
+                               REAL path of the work tree holding the scanned `.git` entry
+                               (`gitStartDir`) and `GIT_CEILING_DIRECTORIES` = that real path's
+                               parent, so a rejected entry makes git fail instead of climbing,
+                               NEVER `--git-dir` / `--work-tree`, which would skip git's ownership
+                               check; the `.git` dir must also pass a mirror of git's
+                               `is_git_directory`, with HEAD read untrimmed). If the
+                               repo's OWN config (config, config.worktree, and a linked
+                               worktree's common dir via `commondir`, resolved by real path the
+                               way git does) defines a `[filter ...]`, `[include]` or
+                               `[includeIf ...]` section, or cannot be read and parsed, or a
+                               `.git` file or `commondir` is not a clean value (ampline is
+                               stricter than git here), or a bare-looking directory sits between
+                               the cwd and the repo, the call is skipped (branch only, no marker,
+                               no `git:` cache entry; D20 follow-up). Everything else in the
+                               repo's own config is trusted as when you run git yourself there;
+                               global and system config are never scanned. The scan reduces, and
+                               does not eliminate, what a repository can make git do; it is not
+                               a sandbox.
     cost.js                     Session cost + lines added/removed.
     task.js                      Current in-progress todo, from ~/.claude/todos/.
     pr.js                          Open PR (`#N`) or GitLab MR (`!N`, when `pr.kind === 'mr'`) +
@@ -111,7 +150,7 @@ lib/bar.js       renderBar(label, usedPct, opts) -> string | null   opts: {stale
                  BAR_WIDTH
 
 lib/cache.js     read(key) -> {age, value} | null · write(key, value)
-                 remove(key) · prune() · CACHE_DIR
+                 remove(key) · prune() · safeKey(key) · CACHE_DIR
 
 lib/usage.js     resolveUsage(input) -> {fiveHour, weekly, stale} | null   <- SYNCHRONOUS
                  formatCountdown(resetsAtMs) -> string
@@ -126,7 +165,7 @@ lib/config.js    loadConfig(cwd) -> config · DEFAULT_CONFIG · VALID_SEGMENTS
 
 lib/render.js    renderStatusline(input) -> string                  <- SYNCHRONOUS
 
-lib/install.js   runInstaller(options) -> void · INSTALL_DIR
+lib/install.js   runInstaller(options) -> void · chooseNodePath({execPath,pathEntries,platform,realpath,isFile}) -> {path,source}|null · pointsAtUs(entry) · isBackupName(name) · INSTALL_DIR
 
 segments         render<Name>Segment(ctx) -> string | null
                  segments/pr.js also exports safeLinkUrl(raw) -> href | null
@@ -181,7 +220,7 @@ non-zero exit from the statusline path, never a partial/garbled line. Specifical
 | Data | Key | Fresh | Stale | Why |
 |---|---|---|---|---|
 | Usage | `usage` | n/a (write-through) | 24h + resets_at rollover check | stdin is authoritative when present; cache only covers cold start |
-| Git state | `git:<gitdir>` | 5s | 60s | one subprocess call; 5s is below human perception for branch/dirty changes |
+| Git state | `git:<gitdir>` | 5s | 60s | one subprocess call; 5s is below human perception for branch/dirty changes. A failed or timed-out call is stored as `{ failed: true }` and not retried for 30s, so a slow repo does not pay the 400ms timeout on every render. If a good entry 5-60s old exists it is served instead and kept, with no marker written, so the timeout is still paid until it ages out |
 | Current task | `task:<session_id>` | 3s | 15s | filesystem I/O; todos don't change faster than this |
 
 ## Diagrams
@@ -198,6 +237,14 @@ the tarball.
 
 `npm test` runs `test/run.js` — spawns the real binary against every fixture in
 `test/fixtures/`, each in its own throwaway `HOME`/`USERPROFILE` (see `DECISIONS.md` D14 for
-why per-fixture isolation, not per-suite, is required). `scripts/syntax-check.js` and
+why per-fixture isolation, not per-suite, is required). Every spawn drops `CLAUDE_CONFIG_DIR`,
+`NO_COLOR` and `FORCE_COLOR` (`cleanEnv()`) and uses its throwaway home as the working directory,
+and every throwaway home starts with an empty `.amplinerc.json`, which ends the config walk-up at
+the home for renders whose directory is the home or inside it (so a config in the user profile
+above `os.tmpdir()` cannot reach them). A payload whose `cwd` is elsewhere still walks that
+directory's own ancestors first. The installer tests live in `test/installer.js` (called from
+`run.js`), run only inside `mkdtemp` homes, and load `lib/install.js` only under a throwaway
+`CLAUDE_CONFIG_DIR`.
+`scripts/syntax-check.js` and
 `scripts/verify-pack.js` are CI-only, excluded from the published tarball by the `files`
 allowlist in `package.json`.
