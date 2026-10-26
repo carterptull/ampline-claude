@@ -1704,6 +1704,141 @@ function runConfigHardeningTests() {
     subOver.status === 0 && subOver.stdout === '', `status ${subOver.status}, stdout ${JSON.stringify((subOver.stdout || '').slice(0, 80))}`);
 }
 
+// A repository's own config can name content filter drivers and include files, and `git status`
+// honors both. ampline-claude therefore does not spawn `git status` in a repository whose own
+// config (never the global or system one) defines either; the branch still renders from HEAD.
+// Nothing here runs a filter: the values are `cat`, and the scanner tests only pass text to a
+// pure function.
+function runGitTrustTests() {
+  const check = (name, ok, detail) => {
+    if (ok) console.log('  ok    git trust boundary: ' + name);
+    else fail('git trust boundary: ' + name, detail);
+  };
+  const git = require('../lib/segments/git');
+  if (typeof git.configIsUntrusted !== 'function' || typeof git.repoConfigIsTrusted !== 'function') {
+    fail('git trust boundary: scanner exports', 'configIsUntrusted and repoConfigIsTrusted must be exported from lib/segments/git.js');
+    return;
+  }
+  const bad = git.configIsUntrusted;
+
+  // ---- the scanner, as a pure function of config text ----
+  const plainCfg = '[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n[remote "origin"]\n\turl = https://example.com/a.git\n[branch "main"]\n\tremote = origin\n';
+  check('an ordinary config is accepted', bad(plainCfg) === false, 'expected false');
+  check('an empty config is accepted', bad('') === false, 'expected false');
+  check('a filter section is flagged', bad('[filter "x"]\n\tclean = cat\n') === true, 'expected true');
+  check('a filter section with no subsection is flagged', bad('[filter]\n\tclean = cat\n') === true, 'expected true');
+  check('a filter section with no keys is flagged', bad('[filter "x"]\n') === true, 'expected true');
+  check('section names are case-insensitive',
+    bad('[FILTER "x"]\n') === true && bad('[Filter "x"]\n') === true && bad('[iNcLuDe]\n') === true && bad('[INCLUDEIF "gitdir:/a/"]\n') === true, 'expected true');
+  check('whitespace around the name and before the header is tolerated',
+    bad('   \t[filter   "x"]\n') === true && bad('\t[ filter "x" ]\n') === true && bad('[filter\t"x"]') === true, 'expected true');
+  check('quoted subsections with spaces, dots and escapes are flagged',
+    bad('[filter "my driver.v2"]\n') === true && bad('[filter "a\\"b"]\n') === true, 'expected true');
+  check('the legacy dotted form is flagged', bad('[filter.lfs]\n') === true && bad('[includeIf.gitdir:/a/]\n') === true, 'expected true');
+  check('include is flagged', bad('[include]\n\tpath = ../x.cfg\n') === true, 'expected true');
+  check('includeIf with a condition is flagged',
+    bad('[includeIf "gitdir:~/work/"]\n\tpath = work.cfg\n') === true && bad('[includeIf "onbranch:main"]\n\tpath = m.cfg\n') === true, 'expected true');
+  check('a header after other sections is found', bad(plainCfg + '[filter "late"]\n') === true, 'expected true');
+  check('CRLF line endings are handled', bad('[core]\r\n\tbare = false\r\n[filter "x"]\r\n') === true && bad('[core]\r\n\tbare = false\r\n') === false, 'expected true/false');
+  check('a leading byte order mark does not hide a header', bad(String.fromCharCode(0xFEFF) + '[filter "x"]\n') === true, 'expected true');
+  check('a header after another header on one line is flagged', bad('[core][filter "x"]\n') === true, 'expected true');
+  check('a header with a trailing comment is flagged', bad('[filter "x"] # note\n') === true && bad('[include] ; note\n') === true, 'expected true');
+  check('commented-out headers do not count', bad('# [filter "x"]\n; [include]\n[core]\n') === false, 'expected false');
+  check('the words in keys, values and other sections do not count',
+    bad('[alias]\n\tfilter = log\n\tinclude = status\n[core]\n\tattributesfile = filter.txt\n[user]\n\tname = include\n[remote "filter"]\n\turl = x\n[branch "include"]\n') === false, 'expected false');
+  check('similar section names do not count', bad('[filters]\n[includes]\n[includeIfs]\n[myfilter]\n') === false, 'expected false');
+  check('keys that mimic a header do not count', bad('[core]\n\tname = [filter "x"]\n') === false, 'expected false');
+  check('an unterminated header is untrusted', bad('[core\n') === true && bad('[filter "x"\n') === true && bad('[') === true, 'expected true');
+  check('an unterminated quote in a header is untrusted', bad('[remote "origin]\n') === true, 'expected true');
+  check('a malformed header is untrusted', bad('[]\n') === true && bad('[ "x" ]\n') === true && bad('[core!]\n') === true, 'expected true');
+  check('a continuation line that looks like a header errs toward untrusted', bad('[core]\n\tname = a \\\n[filter "x"]\n') === true, 'expected true');
+  check('input that is not text is untrusted', bad(null) === true && bad(undefined) === true && bad(42) === true && bad({}) === true, 'expected true');
+
+  // ---- through the real binary, in real throwaway repositories ----
+  const gitEnv = (home) => {
+    const base = { ...process.env };
+    for (const k of ['NO_COLOR', 'FORCE_COLOR', 'CLAUDE_CONFIG_DIR', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_SYSTEM']) delete base[k];
+    return { ...base, HOME: home, USERPROFILE: home, COLUMNS: '200', GIT_CONFIG_NOSYSTEM: '1' };
+  };
+  const probe = spawnSync('git', ['--version'], { encoding: 'utf8' });
+  if (probe.error || probe.status !== 0) {
+    check('git is available to run the repository tests', false, 'the git binary is needed for these tests');
+    return;
+  }
+  const runGit = (home, cwd, args) => spawnSync('git', args, { cwd, env: gitEnv(home), encoding: 'utf8', timeout: 20000 });
+
+  // `setup(home, proj)` prepares the repository and may return { cwd } to render from elsewhere,
+  // or false when its own setup failed. Returns { out, cacheFiles, setupOk }.
+  const scenario = (setup) => {
+    const home = makeTempHome();
+    const proj = path.join(home, 'proj');
+    fs.mkdirSync(proj, { recursive: true });
+    let setupOk = false;
+    let out = '';
+    let cacheFiles = [];
+    try {
+      setupOk = runGit(home, proj, ['init', '-q']).status === 0;
+      const result = setup(home, proj);
+      if (result === false) setupOk = false;
+      const cwd = (result && result.cwd) || proj;
+      const res = spawnSync(process.execPath, [BIN], {
+        input: JSON.stringify(inlinePayload({ cwd })), encoding: 'utf8', timeout: 20000, cwd: home, env: gitEnv(home),
+      });
+      out = String(res.stdout || '').replace(/\x1b\[[0-9;]*m/g, '');
+      try { cacheFiles = fs.readdirSync(path.join(home, '.claude', 'cache', 'ampline')).filter((f) => f.startsWith('git_')); } catch {}
+    } finally {
+      try { fs.rmSync(home, { recursive: true, force: true }); } catch {}
+    }
+    return { out, cacheFiles, setupOk };
+  };
+  const append = (proj, text) => fs.appendFileSync(path.join(proj, '.git', 'config'), text, 'utf8');
+  const hasMarker = (out) => out.includes('✓') || out.includes('●');
+
+  const control = scenario(() => {});
+  check('control: a plain repository shows its branch and a clean marker', control.setupOk && control.out.includes('⎇') && control.out.includes('✓'), JSON.stringify(control.out));
+  check('control: a plain repository writes a git cache entry', control.cacheFiles.length === 1, JSON.stringify(control.cacheFiles));
+
+  const skipped = (label, setup) => {
+    const r = scenario(setup);
+    check(label + ': the branch still renders', r.setupOk && r.out.includes('⎇'), JSON.stringify(r.out));
+    check(label + ': no clean or dirty marker is shown', !hasMarker(r.out), JSON.stringify(r.out));
+    check(label + ': no git cache entry is written', r.cacheFiles.length === 0, JSON.stringify(r.cacheFiles));
+  };
+  skipped('a filter section in the repository config', (home, proj) => { append(proj, '[filter "noop"]\n\tclean = cat\n\tsmudge = cat\n'); });
+  skipped('an include section in the repository config', (home, proj) => {
+    fs.writeFileSync(path.join(proj, '.git', 'extra.cfg'), '# nothing here\n', 'utf8');
+    append(proj, '[include]\n\tpath = extra.cfg\n');
+  });
+  skipped('an includeIf section in the repository config', (home, proj) => {
+    fs.writeFileSync(path.join(proj, '.git', 'extra.cfg'), '# nothing here\n', 'utf8');
+    append(proj, '[includeIf "gitdir:/nowhere/"]\n\tpath = extra.cfg\n');
+  });
+  skipped('a filter section in config.worktree', (home, proj) => {
+    fs.writeFileSync(path.join(proj, '.git', 'config.worktree'), '[filter "noop"]\n\tclean = cat\n', 'utf8');
+  });
+  skipped('a repository config that is not a readable small regular file', (home, proj) => {
+    fs.rmSync(path.join(proj, '.git', 'config'), { force: true });
+    fs.mkdirSync(path.join(proj, '.git', 'config'));
+  });
+
+  // A linked worktree reads the common directory's config too (found through `commondir`).
+  const linked = (extra) => scenario((home, proj) => {
+    const id = ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false'];
+    if (runGit(home, proj, [...id, 'commit', '-q', '--allow-empty', '-m', 'x']).status !== 0) return false;
+    const wt = path.join(home, 'wt');
+    if (runGit(home, proj, ['worktree', 'add', '-q', '-b', 'linked', wt]).status !== 0) return false;
+    extra(proj);
+    return { cwd: wt };
+  });
+  const linkedOk = linked(() => {});
+  check('control: a linked worktree of a plain repository gets a marker',
+    linkedOk.setupOk && linkedOk.out.includes('⎇ linked') && hasMarker(linkedOk.out), JSON.stringify(linkedOk.out));
+  const linkedBad = linked((proj) => { append(proj, '[filter "noop"]\n\tclean = cat\n'); });
+  check('a filter section in the common directory config skips the call in a linked worktree',
+    linkedBad.setupOk && linkedBad.out.includes('⎇ linked') && !hasMarker(linkedBad.out) && linkedBad.cacheFiles.length === 0,
+    JSON.stringify([linkedBad.out, linkedBad.cacheFiles]));
+}
+
 function main() {
   const names = fs.readdirSync(FIXTURES).sort();
   if (!names.length) {
@@ -1725,6 +1860,7 @@ function main() {
   runInjectionFollowupTests();
   runInvisibleCharacterTests();
   runConfigHardeningTests();
+  runGitTrustTests();
   runSourceHygieneTests();
 
   // NO_COLOR must strip every escape sequence.
