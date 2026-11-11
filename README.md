@@ -188,11 +188,11 @@ Blue → cyan → green → yellow → orange → red → pink → violet → pu
 | 12 | Opus 5.5 | high | red-orange | `#E85A3D` |
 | 13 | Opus 5.5 | xhigh | red | `#E8433D` |
 | 14 | Opus 5.5 | max | deep red | `#D8203D` |
-| 15 | Fable 5.1 | low | light pink | `#E88CC8` |
-| 16 | Fable 5.1 | medium | pink | `#E85CB3` |
-| 17 | Fable 5.1 | high | violet | `#C43DE8` |
-| 18 | Fable 5.1 | xhigh | magenta | `#B300D8` |
-| 19 | Fable 5.1 | max | purple | `#8000C0` |
+| 15 | Fable 5.2 | low | light pink | `#E88CC8` |
+| 16 | Fable 5.2 | medium | pink | `#E85CB3` |
+| 17 | Fable 5.2 | high | violet | `#C43DE8` |
+| 18 | Fable 5.2 | xhigh | magenta | `#B300D8` |
+| 19 | Fable 5.2 | max | purple | `#8000C0` |
 
 Haiku 5.5 reports effort, so it runs from a deeper blue at `low` up to the light blue at
 `max`. Haiku 4.5, or any Haiku that sends no effort data, has nothing to grade, so it stays a
