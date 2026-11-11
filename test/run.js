@@ -92,6 +92,7 @@ const EXPECTATIONS = {
   'sonnet-max.json':           { expect: ['max'], refute: ['NaN'] },
   'opus-xhigh.json':           { expect: ['xhigh'], refute: ['NaN'] },
   'fable-max.json':            { expect: ['max'], refute: ['NaN'] },
+  'fable-5-2-high.json':       { expect: ['Fable 5.2', 'high', '\x1b[38;2;196;61;232m'], refute: ['NaN'] },
   'unknown-model.json':        { refute: ['NaN', 'undefined'] },
   'no-rate-limits.json':       { refute: ['↺', 'NaN', 'undefined'] },
   'five-hour-only.json':       { expect: ['H'], refute: ['NaN'] },

@@ -138,4 +138,4 @@ When you add a segment or a module, update both diagrams and the module layout i
 [`../CLAUDE.md`](../CLAUDE.md).
 
 ---
-_Last updated: 2026-10-26 · reflects v1.0.0_
+_Last updated: 2026-11-10 · reflects v1.0.1_
