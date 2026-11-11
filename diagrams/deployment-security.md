@@ -143,4 +143,4 @@ terminal control sequences from untrusted input. Problems in Claude Code, `git`,
 CLI are out of scope. See [`../SECURITY.md`](../SECURITY.md).
 
 ---
-_Last updated: 2026-10-26 · reflects v1.0.0_
+_Last updated: 2026-11-10 · reflects v1.0.1_

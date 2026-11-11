@@ -103,4 +103,4 @@ facts are D2 to D5. The synchronous filesystem reads that have no ceiling are li
 gap in CLAUDE.md.
 
 ---
-_Last updated: 2026-10-26 · reflects v1.0.0_
+_Last updated: 2026-11-10 · reflects v1.0.1_

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-10
+
+A small release for the Fable 5.2 model. Nothing in the renderer changed: colors come from the model family (Haiku, Sonnet, Opus, Fable), not the version, so Fable 5.2 already rendered correctly.
+
+### Changed
+- The README color wheel table now lists Fable 5.2 (it said Fable 5.1). The colors are unchanged.
+
+### Added
+- A Fable 5.2 fixture and test, so the family colors for a new Fable version are checked and not assumed.
+
 ## [1.0.0] - 2026-10-26
 
 First stable release. From here the command line, the `.amplinerc.json` keys, the stdin fields it

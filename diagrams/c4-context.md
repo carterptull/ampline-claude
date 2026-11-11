@@ -72,4 +72,4 @@ For the pieces inside the box, see [`c4-container.md`](c4-container.md). For the
 version of the whole flow, see [`overview.md`](overview.md).
 
 ---
-_Last updated: 2026-10-26 · reflects v1.0.0_
+_Last updated: 2026-11-10 · reflects v1.0.1_
